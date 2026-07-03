@@ -236,6 +236,7 @@ fn handle_event(
         AppEvent::PtyOutput { id, bytes } => {
             let watching = app.focus == Focus::TaskPane && app.task_view == TaskView::Expanded;
             let mut prompt = app.needs_input;
+            let mut task_label = None;
             if let Some(task) = &mut app.task {
                 if task.id == id {
                     task.feed(&bytes);
@@ -252,6 +253,14 @@ fn handle_event(
                         .unwrap_or("")
                         .to_string();
                     prompt = crate::model::looks_like_prompt(&last);
+                    task_label = Some(format!("{} {}", task.spec.targets.join(","), task.spec.action.verb()));
+                }
+            }
+            // Notify on the rising edge only, and only when the user is not
+            // already watching the expanded pane.
+            if app.settings.notifications && !watching && prompt && !app.needs_input {
+                if let Some(label) = task_label {
+                    notify(&format!("{label} is waiting for input"));
                 }
             }
             app.needs_input = prompt;
@@ -266,6 +275,19 @@ fn handle_event(
             }
             if matched {
                 app.needs_input = false;
+                let watching =
+                    app.focus == Focus::TaskPane && app.task_view == TaskView::Expanded;
+                if app.settings.notifications && !watching {
+                    if let Some(task) = &app.task {
+                        let label =
+                            format!("{} {}", task.spec.targets.join(","), task.spec.action.verb());
+                        if success {
+                            notify(&format!("{label} finished"));
+                        } else {
+                            notify(&format!("{label} failed ({code})"));
+                        }
+                    }
+                }
                 // Refresh stats + installed index after each action completes.
                 spawn_stats_tasks(tx.clone(), app.aur_helper_bin.clone(), app.present_sources().contains(&SourceId::Flatpak));
                 if success && !app.queue.is_empty() {
@@ -282,6 +304,18 @@ fn handle_event(
         }
         _ => {}
     }
+}
+
+/// Fire-and-forget desktop notification via notify-send. Missing binary or a
+/// failed call is silently ignored; the TUI status bar still shows the state.
+fn notify(body: &str) {
+    let body = body.to_string();
+    tokio::spawn(async move {
+        let _ = Command::new("notify-send")
+            .args(["--app-name=plaza", "plaza", &body])
+            .output()
+            .await;
+    });
 }
 
 /// PTY size matching the expanded task-pane's inner area: the body is the
@@ -937,23 +971,22 @@ fn try_quit(app: &mut App) {
     }
 }
 
-/// Backtick handler: expand+focus the task pane, or collapse it to a peek.
+/// Backtick handler: bring the task pane up expanded+focused from anywhere;
+/// collapse to a peek only when already at the expanded, focused pane (see
+/// `app::backtick_collapses`).
 fn toggle_task_pane(app: &mut App) {
     if app.task.is_none() {
         return;
     }
-    match app.task_view {
-        TaskView::Expanded => {
-            app.task_view = TaskView::Peek;
-            app.focus = app.content_landing();
-            app.interacting = false;
-        }
-        TaskView::Peek | TaskView::Hidden => {
-            app.task_view = TaskView::Expanded;
-            app.focus = Focus::TaskPane;
-            if let Some(t) = &mut app.task {
-                t.has_unseen_output = false;
-            }
+    if crate::app::backtick_collapses(app.task_view, app.focus == Focus::TaskPane) {
+        app.task_view = TaskView::Peek;
+        app.focus = app.content_landing();
+        app.interacting = false;
+    } else {
+        app.task_view = TaskView::Expanded;
+        app.focus = Focus::TaskPane;
+        if let Some(t) = &mut app.task {
+            t.has_unseen_output = false;
         }
     }
 }

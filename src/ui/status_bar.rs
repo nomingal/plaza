@@ -1,5 +1,5 @@
 use crate::action::runner::TaskState;
-use crate::app::{ActiveView, App, Focus, MainView, SourceState};
+use crate::app::{ActiveView, App, Focus, MainView, SourceState, TaskView};
 use crate::model::SourceId;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -33,14 +33,31 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         let verb = task.spec.action.verb();
         let what = task.spec.targets.join(",");
         let (txt, col) = match task.state {
-            TaskState::Running if app.needs_input && app.focus != Focus::TaskPane => (
-                format!("{} {what} waiting for input · press ` to answer", crate::ui::ic_running(app)),
-                pal.accent,
-            ),
-            TaskState::Running => (
-                format!("{} {what} {verb}ing… `=view", crate::ui::ic_running(app)),
-                pal.warning,
-            ),
+            TaskState::Running if app.needs_input => {
+                // At the expanded, focused pane keystrokes already reach the
+                // child, so "press `" would be wrong there (backtick collapses
+                // the pane): tell the user to just type.
+                let at_prompt =
+                    app.focus == Focus::TaskPane && app.task_view == TaskView::Expanded;
+                let hint = if !app.settings.show_hotkeys {
+                    ""
+                } else if at_prompt {
+                    " · type to answer"
+                } else {
+                    " · press ` to answer"
+                };
+                (
+                    format!("{} {what} waiting for input{hint}", crate::ui::ic_running(app)),
+                    pal.accent,
+                )
+            }
+            TaskState::Running => {
+                let hint = if app.settings.show_hotkeys { " `=view" } else { "" };
+                (
+                    format!("{} {what} {verb}ing…{hint}", crate::ui::ic_running(app)),
+                    pal.warning,
+                )
+            }
             TaskState::Done { success: true, .. } => {
                 (format!("{} {what} done", crate::ui::ic_success(app)), pal.success)
             }

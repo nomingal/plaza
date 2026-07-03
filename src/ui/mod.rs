@@ -348,6 +348,9 @@ fn option_row_text(app: &App, id: OptionId) -> String {
         OptionId::HideIdleFilter => {
             format!("{} Hide filter box when not in use", check(app.settings.hide_idle_filter))
         }
+        OptionId::Notifications => {
+            format!("{} Desktop notifications", check(app.settings.notifications))
+        }
     }
 }
 

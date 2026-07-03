@@ -59,6 +59,9 @@ pub struct Settings {
     pub default_manage_sort_dir: SortDir,
     /// Default for "float upgradable packages to the top" in Manage (on).
     pub default_manage_float_updates: bool,
+    /// Send a desktop notification (notify-send) when a background task
+    /// finishes or stops to wait for input, unless the pane is being watched.
+    pub notifications: bool,
 }
 
 impl Default for Settings {
@@ -84,6 +87,7 @@ impl Default for Settings {
             default_manage_sort_key: SortKey::Name,
             default_manage_sort_dir: SortDir::Asc,
             default_manage_float_updates: true,
+            notifications: true,
         }
     }
 }
@@ -217,6 +221,13 @@ mod tests {
         Settings { debounce_ms: 54321, ..Default::default() }.save();
         let after = config_path().and_then(|p| std::fs::read(p).ok());
         assert_eq!(before, after, "save() wrote the real config from a test");
+    }
+
+    #[test]
+    fn old_settings_without_notifications_load_as_on() {
+        let json = r#"{"show_hotkeys":true,"debounce_ms":400}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!(s.notifications);
     }
 
     #[test]

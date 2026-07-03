@@ -42,15 +42,18 @@ pub fn draw_peek(frame: &mut Frame, app: &App, area: Rect) {
         body.push_str("\n\nqueue paused after failure");
     }
 
-    // Context hints depend on whether the task finished and whether work is queued.
-    let queued = !app.queue.is_empty();
-    let hint = match (done, queued) {
-        (true, true) => "⏎ continue · x clear queue · j/k·d edit",
-        (true, false) => "⏎ close",
-        (false, true) => "⏎ view · esc hide · j/k·d edit · x clear",
-        (false, false) => "⏎ view · esc hide",
-    };
-    body.push_str(&format!("\n\n{hint}"));
+    // Context hints depend on whether the task finished and whether work is
+    // queued. They honor the "Show hotkey hints" setting like every other pane.
+    if app.settings.show_hotkeys {
+        let queued = !app.queue.is_empty();
+        let hint = match (done, queued) {
+            (true, true) => "⏎ continue · x clear queue · j/k·d edit",
+            (true, false) => "⏎ close",
+            (false, true) => "⏎ view · esc hide · j/k·d edit · x clear",
+            (false, false) => "⏎ view · esc hide",
+        };
+        body.push_str(&format!("\n\n{hint}"));
+    }
 
     // The peek has only two states: focused (you navigated onto it) or not.
     // Enter expands to the overlay rather than "interacting", so it never goes
@@ -76,13 +79,18 @@ pub fn draw_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let Some(task) = &app.task else { return };
     let (title, color) = status_title(app, task);
     let done = matches!(task.state, TaskState::Done { .. });
-    let hint = if done {
-        if app.queue.is_empty() { "esc/q close" } else { "esc/q continue · x clear" }
+    let title = if app.settings.show_hotkeys {
+        let hint = if done {
+            if app.queue.is_empty() { "esc/q close" } else { "esc/q continue · x clear" }
+        } else {
+            "^C cancel · esc/` peek"
+        };
+        format!("{title}  ·  {hint}")
     } else {
-        "^C cancel · esc/` peek"
+        title
     };
     frame.render_widget(Clear, area);
-    let block = crate::ui::themed_block(app, color, format!("{title}  ·  {hint}"));
+    let block = crate::ui::themed_block(app, color, title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let term = PseudoTerminal::new(task.parser.screen());

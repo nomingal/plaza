@@ -84,6 +84,7 @@ pub enum OptionId {
     FlatpakAppId,
     FloatUpdates,
     HideIdleFilter,
+    Notifications,
 }
 
 /// Per-view repo-filter state: the unchecked repo ids and the box cursor. Search
@@ -93,6 +94,16 @@ pub enum OptionId {
 pub struct RepoFilter {
     pub off: BTreeSet<String>,
     pub selected: usize,
+}
+
+/// Backtick semantics for the task pane: it means "take me to the prompt"
+/// from anywhere, and only collapses when the user is already at the expanded,
+/// focused pane. A blind toggle here is what broke the install-prompt flow:
+/// after y-confirm auto-surfaces the pane, the status bar said "press ` to
+/// answer" and the keypress collapsed the pane instead, after which typed
+/// answers were silently swallowed by the peek-view key handler.
+pub fn backtick_collapses(view: TaskView, pane_focused: bool) -> bool {
+    view == TaskView::Expanded && pane_focused
 }
 
 /// Hover-movement direction (navigate mode).
@@ -572,7 +583,7 @@ impl App {
             ("Search", &[SearchDelay, CollapseRepos, StackVariants, GroupFlatpak, VariantBadge]),
             ("Manage", &[RemoveDepth, AurHelper, FlatpakAppId, FloatUpdates]),
             ("Filters", &[HideIdleFilter]),
-            ("General", &[ShowHotkeys]),
+            ("General", &[ShowHotkeys, Notifications]),
         ];
         groups
             .iter()
@@ -608,6 +619,9 @@ impl App {
     pub fn toggle_option(&mut self) {
         match self.selected_option() {
             OptionId::ShowHotkeys => self.settings.show_hotkeys = !self.settings.show_hotkeys,
+            OptionId::Notifications => {
+                self.settings.notifications = !self.settings.notifications
+            }
             OptionId::CollapseRepos => self.settings.collapse_repos = !self.settings.collapse_repos,
             OptionId::StackVariants => self.settings.stack_variants = !self.settings.stack_variants,
             OptionId::GroupFlatpak => self.settings.group_flatpak = !self.settings.group_flatpak,
@@ -1486,6 +1500,27 @@ mod tests {
             install_date: date,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn backtick_goes_to_pane_unless_already_there() {
+        // Already at the expanded pane: backtick steps down to a peek.
+        assert!(backtick_collapses(TaskView::Expanded, true));
+        // Expanded but focus elsewhere: backtick must focus the pane, not hide it.
+        assert!(!backtick_collapses(TaskView::Expanded, false));
+        // Peek with pane focus (esc step-down): backtick expands again.
+        assert!(!backtick_collapses(TaskView::Peek, true));
+        assert!(!backtick_collapses(TaskView::Hidden, false));
+    }
+
+    #[test]
+    fn notifications_option_toggles_setting() {
+        let mut app = App::with_settings(vec![SourceId::Pacman], Settings::default());
+        assert!(app.settings.notifications); // default on
+        app.options_selected =
+            app.flat_options().iter().position(|o| *o == OptionId::Notifications).unwrap();
+        app.toggle_option();
+        assert!(!app.settings.notifications);
     }
 
     #[test]
