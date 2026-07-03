@@ -199,6 +199,15 @@ impl Action {
             Action::Upgrade => "upgrade",
         }
     }
+
+    /// Present-tense form for "running" labels ("removing", not "removeing").
+    pub fn verb_ing(self) -> &'static str {
+        match self {
+            Action::Install => "installing",
+            Action::Remove => "removing",
+            Action::Upgrade => "upgrading",
+        }
+    }
 }
 
 /// How aggressively a removal cleans up. Maps to pacman's `-R` family. The

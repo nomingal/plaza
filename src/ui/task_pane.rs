@@ -97,19 +97,10 @@ pub fn draw_overlay(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(term, inner);
 }
 
-/// Present-tense label for the running action shown in the pane title.
-fn running_verb(task: &ActiveTask) -> &'static str {
-    match task.spec.action {
-        crate::model::Action::Install => "installing",
-        crate::model::Action::Remove => "removing",
-        crate::model::Action::Upgrade => "upgrading",
-    }
-}
-
 fn status_title(app: &App, task: &ActiveTask) -> (String, Color) {
     match task.state {
         TaskState::Running => (
-            format!(" {} {} ", crate::ui::ic_running(app), running_verb(task)),
+            format!(" {} {} ", crate::ui::ic_running(app), task.spec.action.verb_ing()),
             app.palette.warning,
         ),
         TaskState::Done { success: true, .. } => (

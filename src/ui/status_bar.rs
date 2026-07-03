@@ -30,7 +30,6 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     if let Some(task) = &app.task {
-        let verb = task.spec.action.verb();
         let what = task.spec.targets.join(",");
         let (txt, col) = match task.state {
             TaskState::Running if app.needs_input => {
@@ -54,7 +53,11 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             TaskState::Running => {
                 let hint = if app.settings.show_hotkeys { " `=view" } else { "" };
                 (
-                    format!("{} {what} {verb}ing…{hint}", crate::ui::ic_running(app)),
+                    format!(
+                        "{} {what} {}…{hint}",
+                        crate::ui::ic_running(app),
+                        task.spec.action.verb_ing()
+                    ),
                     pal.warning,
                 )
             }
