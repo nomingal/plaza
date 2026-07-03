@@ -62,6 +62,9 @@ pub struct Settings {
     /// Send a desktop notification (notify-send) when a background task
     /// finishes or stops to wait for input, unless the pane is being watched.
     pub notifications: bool,
+    /// Query the GitHub releases API once at startup and show a sidebar note
+    /// when a newer plaza release exists.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -88,6 +91,7 @@ impl Default for Settings {
             default_manage_sort_dir: SortDir::Asc,
             default_manage_float_updates: true,
             notifications: true,
+            check_updates: true,
         }
     }
 }
@@ -228,6 +232,13 @@ mod tests {
         let json = r#"{"show_hotkeys":true,"debounce_ms":400}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert!(s.notifications);
+    }
+
+    #[test]
+    fn old_settings_without_check_updates_load_as_on() {
+        let json = r#"{"show_hotkeys":true,"debounce_ms":400}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!(s.check_updates);
     }
 
     #[test]

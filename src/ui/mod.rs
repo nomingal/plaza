@@ -80,10 +80,11 @@ fn draw_sidebar_column(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     // ponytail: sidebar content is at most ~12 lines (incl. borders); recompute
-    // if the top box gains rows.
+    // if the top box gains rows. The new-version note adds 4 when present.
+    let top = if app.newer_version.is_some() { 16 } else { 12 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(12), Constraint::Min(0)])
+        .constraints([Constraint::Length(top), Constraint::Min(0)])
         .split(area);
     sidebar::draw(frame, app, chunks[0]);
     filter::draw(frame, app, chunks[1]);
@@ -350,6 +351,9 @@ fn option_row_text(app: &App, id: OptionId) -> String {
         }
         OptionId::Notifications => {
             format!("{} Desktop notifications", check(app.settings.notifications))
+        }
+        OptionId::CheckUpdates => {
+            format!("{} Check for plaza updates", check(app.settings.check_updates))
         }
     }
 }

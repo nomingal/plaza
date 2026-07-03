@@ -85,6 +85,7 @@ pub enum OptionId {
     FloatUpdates,
     HideIdleFilter,
     Notifications,
+    CheckUpdates,
 }
 
 /// Per-view repo-filter state: the unchecked repo ids and the box cursor. Search
@@ -375,6 +376,9 @@ pub struct App {
     /// Transient one-line status message (e.g. "no AUR helper installed"), shown
     /// in the status bar until the next keypress.
     pub status_msg: Option<String>,
+    /// A newer plaza release tag (e.g. `v0.8.0`), when the startup update
+    /// check found one. Rendered as a sidebar note.
+    pub newer_version: Option<String>,
     /// True while the running task's latest output line looks like a prompt
     /// waiting for input. Drives the status-bar alert when the user is off the
     /// task pane. Recomputed on each chunk of PTY output.
@@ -474,6 +478,7 @@ impl App {
             aur_helper_bin: None,
             aur_helper_fell_back: false,
             status_msg: None,
+            newer_version: None,
             needs_input: false,
             should_quit: false,
         }
@@ -583,7 +588,7 @@ impl App {
             ("Search", &[SearchDelay, CollapseRepos, StackVariants, GroupFlatpak, VariantBadge]),
             ("Manage", &[RemoveDepth, AurHelper, FlatpakAppId, FloatUpdates]),
             ("Filters", &[HideIdleFilter]),
-            ("General", &[ShowHotkeys, Notifications]),
+            ("General", &[ShowHotkeys, Notifications, CheckUpdates]),
         ];
         groups
             .iter()
@@ -621,6 +626,9 @@ impl App {
             OptionId::ShowHotkeys => self.settings.show_hotkeys = !self.settings.show_hotkeys,
             OptionId::Notifications => {
                 self.settings.notifications = !self.settings.notifications
+            }
+            OptionId::CheckUpdates => {
+                self.settings.check_updates = !self.settings.check_updates
             }
             OptionId::CollapseRepos => self.settings.collapse_repos = !self.settings.collapse_repos,
             OptionId::StackVariants => self.settings.stack_variants = !self.settings.stack_variants,
@@ -1521,6 +1529,16 @@ mod tests {
             app.flat_options().iter().position(|o| *o == OptionId::Notifications).unwrap();
         app.toggle_option();
         assert!(!app.settings.notifications);
+    }
+
+    #[test]
+    fn check_updates_option_toggles_setting() {
+        let mut app = App::with_settings(vec![SourceId::Pacman], Settings::default());
+        assert!(app.settings.check_updates); // default on
+        app.options_selected =
+            app.flat_options().iter().position(|o| *o == OptionId::CheckUpdates).unwrap();
+        app.toggle_option();
+        assert!(!app.settings.check_updates);
     }
 
     #[test]

@@ -103,6 +103,9 @@ async fn run_tui() -> anyhow::Result<()> {
     spawn_input_task(tx.clone());
     spawn_stats_tasks(tx.clone(), app.aur_helper_bin.clone(), app.present_sources().contains(&SourceId::Flatpak));
     spawn_theme_tick(tx.clone());
+    if app.settings.check_updates {
+        spawn_self_update_check(tx.clone());
+    }
     // Warm the Flatpak AppStream cache in the background so a cold cache does not
     // make searches look empty. Best-effort; never blocks the UI.
     if app.present_sources().contains(&SourceId::Flatpak) {
@@ -214,6 +217,7 @@ fn handle_event(
         AppEvent::SearchError { query_id, source_id } => {
             app.set_source_error(query_id, source_id);
         }
+        AppEvent::SelfUpdate(tag) => app.newer_version = Some(tag),
         AppEvent::Stats(s) => app.stats = s,
         AppEvent::Updates(u) => app.updates = u,
         AppEvent::Installed(idx) => app.installed = idx,
@@ -304,6 +308,32 @@ fn handle_event(
         }
         _ => {}
     }
+}
+
+/// One-shot startup check against the GitHub releases API. Sends `SelfUpdate`
+/// only when the latest release tag is strictly newer than this build; any
+/// network or parse failure is a silent no-op. GitHub requires a User-Agent.
+fn spawn_self_update_check(tx: UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let fetch = async {
+            let client = reqwest::Client::builder()
+                .user_agent(concat!("plaza/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .ok()?;
+            let body = client
+                .get("https://api.github.com/repos/StaszeKrk/plaza/releases/latest")
+                .send()
+                .await
+                .ok()?
+                .text()
+                .await
+                .ok()?;
+            model::newer_release(env!("CARGO_PKG_VERSION"), &model::parse_latest_tag(&body)?)
+        };
+        if let Some(tag) = fetch.await {
+            let _ = tx.send(AppEvent::SelfUpdate(tag));
+        }
+    });
 }
 
 /// Fire-and-forget desktop notification via notify-send. Missing binary or a

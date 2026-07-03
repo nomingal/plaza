@@ -102,5 +102,22 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines = stats;
     lines.push(Line::from(""));
     lines.extend(nav);
+    // Startup update check found a newer plaza release. Two lines: the column
+    // is 18 cols inside the borders, so the message cannot fit on one.
+    if let Some(tag) = &app.newer_version {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "new version".to_string(),
+            Style::default().fg(pal.update),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("available: {tag}"),
+            Style::default().fg(pal.update),
+        )));
+        lines.push(Line::from(Span::styled(
+            "(turn off: o)".to_string(),
+            Style::default().fg(pal.muted),
+        )));
+    }
     frame.render_widget(Paragraph::new(lines), inner);
 }

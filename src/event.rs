@@ -33,4 +33,6 @@ pub enum AppEvent {
     ActionFinished { id: u64, success: bool, code: u32 },
     /// Metronome tick driving theme-file live-reload (see `poll_theme_reload`).
     ThemeReloadTick,
+    /// The startup update check found a newer plaza release (the tag).
+    SelfUpdate(String),
 }

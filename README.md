@@ -107,6 +107,10 @@ General:
   options): when a background task finishes or stops to wait for input while
   you are not watching its pane, plaza notifies you so a forgotten install
   never sits silently at a sudo prompt.
+- Update check (on by default, toggleable in options): at startup plaza asks
+  the GitHub releases API once whether a newer plaza version exists and, if
+  so, shows a note in the sidebar. Turning "Check for plaza updates" off in
+  options stops the network call entirely.
 
 ## Requirements
 

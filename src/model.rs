@@ -570,6 +570,33 @@ pub fn looks_like_prompt(line: &str) -> bool {
         || (l.starts_with("==>") && l.ends_with(':'))
 }
 
+/// Parse `x.y.z` (an optional leading `v` is stripped) into a comparable
+/// tuple. `None` for anything else; a tag we cannot parse never produces an
+/// update message.
+pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+    let s = s.strip_prefix('v').unwrap_or(s);
+    let mut it = s.split('.');
+    let major = it.next()?.parse().ok()?;
+    let minor = it.next()?.parse().ok()?;
+    let patch = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+/// The release tag to announce, if `tag` is strictly newer than the running
+/// version. Returned as displayed (`v0.8.0`).
+pub fn newer_release(current: &str, tag: &str) -> Option<String> {
+    (parse_version(tag)? > parse_version(current)?).then(|| tag.to_string())
+}
+
+/// Extract `tag_name` from a GitHub `releases/latest` JSON response.
+pub fn parse_latest_tag(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    Some(v.get("tag_name")?.as_str()?.to_string())
+}
+
 /// The full-upgrade command for a single source.
 /// - pacman: `sudo pacman -Syu` (sync + upgrade the repos)
 /// - aur:    `<aur_bin> -Sua` (upgrade AUR packages only, via the resolved helper)
@@ -682,6 +709,28 @@ mod tests {
         assert_eq!(ReasonFilter::Explicit.next(), ReasonFilter::Orphans);
         assert_eq!(ReasonFilter::Orphans.next(), ReasonFilter::All);
         assert_eq!(ReasonFilter::default(), ReasonFilter::All);
+    }
+
+    #[test]
+    fn version_compare_announces_only_strictly_newer() {
+        assert_eq!(newer_release("0.7.1", "v0.8.0"), Some("v0.8.0".into()));
+        assert_eq!(newer_release("0.7.1", "v1.0.0"), Some("v1.0.0".into()));
+        assert_eq!(newer_release("0.7.1", "v0.7.1"), None); // equal
+        assert_eq!(newer_release("0.7.1", "v0.7.0"), None); // older
+        assert_eq!(newer_release("0.7.1", "0.7.2"), Some("0.7.2".into())); // no v
+        assert_eq!(newer_release("0.7.1", "nightly"), None); // garbage tag
+        assert_eq!(newer_release("0.7.1", "v0.8"), None); // not x.y.z
+        assert_eq!(newer_release("dev", "v0.8.0"), None); // garbage current
+        // numeric compare, not lexicographic
+        assert_eq!(newer_release("0.9.0", "v0.10.0"), Some("v0.10.0".into()));
+    }
+
+    #[test]
+    fn latest_tag_parses_from_release_json() {
+        let body = r#"{"url":"https://api.github.com/...","tag_name":"v0.8.0","name":"v0.8.0"}"#;
+        assert_eq!(parse_latest_tag(body), Some("v0.8.0".into()));
+        assert_eq!(parse_latest_tag("{}"), None);
+        assert_eq!(parse_latest_tag("not json"), None);
     }
 
     #[test]
