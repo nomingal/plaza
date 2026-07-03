@@ -99,9 +99,14 @@ General:
   AUR helper (auto, yay, or paru), stack package variants and group a matching
   Flatpak (two toggles), pick the variant-badge style (count or repeat), float
   upgradable packages to the top of the Manage list, choose whether the filter
-  box hides when it is not in use, and
+  box hides when it is not in use,
   pick how the matched substring is drawn in result and Manage names (off, color,
-  underline, or both). Settings are saved to `~/.config/plaza/settings.json`.
+  underline, or both), and turn desktop notifications on or off. Settings are
+  saved to `~/.config/plaza/settings.json`.
+- Desktop notifications (via `notify-send`, on by default, toggleable in
+  options): when a background task finishes or stops to wait for input while
+  you are not watching its pane, plaza notifies you so a forgotten install
+  never sits silently at a sudo prompt.
 
 ## Requirements
 
