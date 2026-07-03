@@ -1462,9 +1462,6 @@ impl App {
 mod tests {
     use super::*;
 
-    /// Serializes the few tests that mutate the process-global `XDG_CONFIG_HOME`,
-    /// so they cannot interleave with each other under parallel test threads.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use crate::model::{CommandLine, SourceMeta};
 
     fn hit(name: &str, source: SourceId) -> PackageHit {
@@ -1710,10 +1707,6 @@ mod tests {
 
     #[test]
     fn toggle_show_hotkeys_via_id() {
-        let _env = ENV_LOCK.lock().unwrap();
-        // toggle_option persists; keep it off the real ~/.config.
-        let tmp = std::env::temp_dir().join(format!("plaza-opt-test-{}", std::process::id()));
-        std::env::set_var("XDG_CONFIG_HOME", &tmp);
         let mut app = App::with_settings(vec![], Settings::default());
         let idx = app
             .flat_options()
@@ -1724,8 +1717,6 @@ mod tests {
         let before = app.settings.show_hotkeys;
         app.toggle_option();
         assert_ne!(app.settings.show_hotkeys, before);
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[test]
@@ -2200,11 +2191,6 @@ mod tests {
 
     #[test]
     fn save_filter_default_persists_active_view_only() {
-        // Redirect config writes to a temp dir so the test never touches the real
-        // ~/.config. save() reads XDG_CONFIG_HOME (see config::config_base).
-        let _env = ENV_LOCK.lock().unwrap();
-        let tmp = std::env::temp_dir().join(format!("plaza-test-{}", std::process::id()));
-        std::env::set_var("XDG_CONFIG_HOME", &tmp);
         let mut app = App::with_settings(
             vec![SourceId::Pacman, SourceId::Aur],
             Settings::default(),
@@ -2215,8 +2201,6 @@ mod tests {
         app.save_filter_default();
         assert_eq!(app.settings.default_manage_filter_off, vec!["multilib".to_string()]);
         assert!(app.settings.default_search_filter_off.is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[test]

@@ -140,6 +140,12 @@ impl Settings {
     /// cannot truncate an existing config into an empty/partial file (which would
     /// then load as all-defaults).
     pub fn save(&self) {
+        // No-op in test builds: App methods that persist as a side effect
+        // (toggle_option, save_filter_default) are exercised by unit tests, and
+        // a save there would overwrite the developer's real settings file.
+        if cfg!(test) {
+            return;
+        }
         let Some(path) = config_path() else { return };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -200,6 +206,17 @@ mod tests {
     #[test]
     fn garbage_file_falls_back_to_default() {
         assert_eq!(parse_or_recover("not json at all").palette, Settings::default().palette);
+    }
+
+    #[test]
+    fn save_never_touches_disk_under_test() {
+        // App methods like toggle_option() persist as a side effect. Unit tests
+        // exercising them must not clobber the developer's real
+        // ~/.config/plaza/settings.json, so save() is a no-op in test builds.
+        let before = config_path().and_then(|p| std::fs::read(p).ok());
+        Settings { debounce_ms: 54321, ..Default::default() }.save();
+        let after = config_path().and_then(|p| std::fs::read(p).ok());
+        assert_eq!(before, after, "save() wrote the real config from a test");
     }
 
     #[test]
