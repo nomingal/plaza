@@ -1,0 +1,56 @@
+name: Release deb
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build a .deb for (e.g. v0.7.2)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    # debian:12 (glibc 2.36) keeps the binary installable on Debian stable;
+    # a plain ubuntu-latest build would link glibc 2.39.
+    runs-on: ubuntu-latest
+    container: debian:12
+    env:
+      TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y curl build-essential git gh
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal
+
+      - name: Build .deb
+        run: |
+          . "$HOME/.cargo/env"
+          cargo install cargo-deb --locked
+          cargo deb
+
+      - name: Check package version matches the tag
+        run: |
+          deb=$(ls target/debian/*.deb)
+          ver=$(dpkg-deb -f "$deb" Version)
+          case "$ver" in
+            "${TAG#v}"*) echo "$deb version $ver matches $TAG" ;;
+            *) echo "package version $ver does not match tag $TAG"; exit 1 ;;
+          esac
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" target/debian/*.deb --clobber
