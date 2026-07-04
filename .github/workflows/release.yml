@@ -53,4 +53,7 @@ jobs:
       - name: Attach to release
         env:
           GH_TOKEN: ${{ github.token }}
+          # gh otherwise asks git for the repo, and git refuses the
+          # runner-owned workspace inside the container
+          GH_REPO: ${{ github.repository }}
         run: gh release upload "$TAG" target/debian/*.deb --clobber
