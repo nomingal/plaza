@@ -1,7 +1,7 @@
 use crate::action::runner::ActiveTask;
 use crate::config::Settings;
 use crate::model::{
-    chain_commands, remove_command, remove_command_apt, remove_command_flatpak,
+    chain_commands, remove_command, remove_command_apt, remove_command_dnf, remove_command_flatpak,
     source_upgrade_command,
     upgrade_one_command, Action, ActionSpec, InstalledStats, PackageDetail, PackageHit, PackageRow,
     Provider, SortDir, SortKey, SourceId, UpdatesInfo,
@@ -39,6 +39,8 @@ pub enum FilterId {
     Flatpak,
     /// apt (Debian).
     Apt,
+    /// dnf (Fedora).
+    Dnf,
     /// A Manage installation-reason choice (radio: All/Explicit/Orphans). Shown in
     /// the filter box only in the Manage view.
     Reason(crate::model::ReasonFilter),
@@ -825,7 +827,8 @@ impl App {
         let any_known = self.updates.repo.is_some()
             || self.updates.aur.is_some()
             || self.updates.flatpak.is_some()
-            || self.updates.apt.is_some();
+            || self.updates.apt.is_some()
+            || self.updates.dnf.is_some();
         any_known.then_some(self.updates_list.len())
     }
 
@@ -1150,6 +1153,13 @@ impl App {
                 id: FilterId::Apt,
             });
         }
+        if self.present_sources().contains(&SourceId::Dnf) {
+            rows.push(FilterRow {
+                label: "dnf".into(),
+                checked: self.repo_shown("dnf"),
+                id: FilterId::Dnf,
+            });
+        }
         // Reason rows (radio) live in the Manage view only.
         if self.active_view == ActiveView::Manage {
             use crate::model::ReasonFilter::*;
@@ -1211,6 +1221,7 @@ impl App {
             FilterId::Aur => self.toggle_repo_off("aur"),
             FilterId::Flatpak => self.toggle_repo_off("flatpak"),
             FilterId::Apt => self.toggle_repo_off("apt"),
+            FilterId::Dnf => self.toggle_repo_off("dnf"),
             FilterId::Reason(r) => self.manage_reason = r, // radio: select
             FilterId::Sort(k) => self.select_sort(k),      // radio, or flip dir
             FilterId::SaveDefault => {
@@ -1318,6 +1329,15 @@ impl App {
                 source_id: SourceId::Apt,
                 action: Action::Remove,
                 command: remove_command_apt(&pkg.name, self.settings.remove_depth),
+            });
+        }
+        // dnf removal goes through `dnf remove` (depth is ignored; see the fn).
+        if pkg.origin == "dnf" {
+            return Some(ActionSpec {
+                targets: vec![pkg.name.clone()],
+                source_id: SourceId::Dnf,
+                action: Action::Remove,
+                command: remove_command_dnf(&pkg.name, self.settings.remove_depth),
             });
         }
         Some(ActionSpec {
@@ -1975,6 +1995,31 @@ mod tests {
         assert_eq!(spec.command.program, "sudo");
         assert_eq!(spec.command.args[0], "apt-get");
         assert_eq!(spec.command.args.last().unwrap(), "vim");
+    }
+
+    #[test]
+    fn dnf_filter_row_present_and_toggles() {
+        let mut app = App::with_settings(vec![SourceId::Dnf], Settings::default());
+        let rows = app.filter_checkboxes();
+        assert!(rows.iter().any(|r| matches!(r.id, FilterId::Dnf)));
+        assert!(app.repo_shown("dnf")); // shown by default
+        app.toggle_repo_off("dnf");
+        assert!(!app.repo_shown("dnf")); // toggled off
+    }
+
+    #[test]
+    fn remove_spec_routes_dnf_to_dnf_remove() {
+        let mut app = App::with_settings(vec![SourceId::Dnf], Settings::default());
+        app.installed_list = vec![InstalledPkg {
+            name: "vim-enhanced".into(),
+            version: "9.1.158-1.fc41".into(),
+            origin: "dnf".into(),
+            ..Default::default()
+        }];
+        let spec = app.remove_spec().expect("spec");
+        assert_eq!(spec.source_id, SourceId::Dnf);
+        assert_eq!(spec.command.program, "sudo");
+        assert_eq!(spec.command.args, vec!["dnf", "remove", "vim-enhanced"]);
     }
 
     #[test]

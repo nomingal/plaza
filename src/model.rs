@@ -6,6 +6,7 @@ pub enum SourceId {
     Aur,
     Flatpak,
     Apt,
+    Dnf,
 }
 
 impl SourceId {
@@ -15,6 +16,7 @@ impl SourceId {
             SourceId::Aur => "aur",
             SourceId::Flatpak => "flatpak",
             SourceId::Apt => "apt",
+            SourceId::Dnf => "dnf",
         }
     }
 }
@@ -83,6 +85,7 @@ impl Provider {
             SourceId::Aur => "aur",
             SourceId::Flatpak => "flatpak",
             SourceId::Apt => self.meta.repo.as_deref().unwrap_or("apt"),
+            SourceId::Dnf => self.meta.repo.as_deref().unwrap_or("dnf"),
         }
     }
 
@@ -99,6 +102,7 @@ impl Provider {
             SourceId::Aur => format!("aur:{}", self.target),
             SourceId::Flatpak => format!("flatpak:{}", self.target),
             SourceId::Apt => format!("apt:{}", self.target),
+            SourceId::Dnf => format!("dnf:{}", self.target),
         }
     }
 
@@ -136,6 +140,12 @@ impl Provider {
             SourceId::Apt => CommandLine {
                 program: "sudo".into(),
                 args: vec!["apt-get".into(), "install".into(), self.target.clone()],
+            },
+            // dnf installs unqualified (its own repo priority picks the default),
+            // interactive (no -y) so the PTY surfaces dnf's [y/N] prompt.
+            SourceId::Dnf => CommandLine {
+                program: "sudo".into(),
+                args: vec!["dnf".into(), "install".into(), self.target.clone()],
             },
         }
     }
@@ -522,6 +532,10 @@ pub fn upgrade_one_command(name: &str, source_id: SourceId, aur_bin: &str) -> Co
             program: "sudo".into(),
             args: vec!["apt-get".into(), "install".into(), "--only-upgrade".into(), name.into()],
         },
+        SourceId::Dnf => CommandLine {
+            program: "sudo".into(),
+            args: vec!["dnf".into(), "upgrade".into(), name.into()],
+        },
     }
 }
 
@@ -553,6 +567,16 @@ pub fn remove_command_apt(name: &str, depth: RemoveDepth) -> CommandLine {
     }
     args.push(name.to_string());
     CommandLine { program: "sudo".into(), args }
+}
+
+/// Remove a dnf package (no `-y`, interactive). rpm has no purge or config-file
+/// concept and dnf already drops now-unneeded dependencies on remove, so all
+/// three `RemoveDepth` values map to a plain `sudo dnf remove <name>`.
+pub fn remove_command_dnf(name: &str, _depth: RemoveDepth) -> CommandLine {
+    CommandLine {
+        program: "sudo".into(),
+        args: vec!["dnf".into(), "remove".into(), name.to_string()],
+    }
 }
 
 /// True when a PTY line looks like a prompt that has stopped to wait for input
@@ -620,6 +644,12 @@ pub fn source_upgrade_command(source_id: SourceId, aur_bin: &str) -> CommandLine
             program: "sh".into(),
             args: vec!["-c".into(), "sudo apt-get update && sudo apt-get upgrade".into()],
         },
+        // dnf upgrade refreshes metadata itself; interactive (no -y) so it
+        // surfaces the proceed prompt.
+        SourceId::Dnf => CommandLine {
+            program: "sudo".into(),
+            args: vec!["dnf".into(), "upgrade".into()],
+        },
     }
 }
 
@@ -670,11 +700,12 @@ pub struct InstalledStats {
     pub foreign: usize,
     pub flatpak: usize,
     pub apt: usize,
+    pub dnf: usize,
 }
 
 impl InstalledStats {
     pub fn total(&self) -> usize {
-        self.repo + self.foreign + self.flatpak + self.apt
+        self.repo + self.foreign + self.flatpak + self.apt + self.dnf
     }
 }
 
@@ -684,6 +715,7 @@ pub struct UpdatesInfo {
     pub aur: Option<usize>,
     pub flatpak: Option<usize>,
     pub apt: Option<usize>,
+    pub dnf: Option<usize>,
 }
 
 /// The bare package name from a dependency string, dropping version
@@ -754,6 +786,45 @@ mod tests {
         assert_eq!(SourceId::Aur.badge(), "aur");
         assert_eq!(SourceId::Flatpak.badge(), "flatpak");
         assert_eq!(SourceId::Apt.badge(), "apt");
+        assert_eq!(SourceId::Dnf.badge(), "dnf");
+    }
+
+    #[test]
+    fn dnf_provider_commands() {
+        let p = Provider {
+            source_id: SourceId::Dnf,
+            version: "2:9.1.158-1.fc41".into(),
+            installed: false,
+            installed_version: None,
+            target: "vim-enhanced".into(),
+            meta: SourceMeta { repo: Some("updates".into()), ..Default::default() },
+        };
+        let c = p.install_command("vim-enhanced", "");
+        assert_eq!(c.program, "sudo");
+        assert_eq!(c.args, vec!["dnf", "install", "vim-enhanced"]);
+        assert_eq!(p.detail_key("vim-enhanced"), "dnf:vim-enhanced");
+        // the repo name shows on the badge, like a pacman repo
+        assert_eq!(p.badge(), "updates");
+    }
+
+    #[test]
+    fn dnf_upgrade_and_source_upgrade() {
+        let one = upgrade_one_command("vim-enhanced", SourceId::Dnf, "");
+        assert_eq!(one.program, "sudo");
+        assert_eq!(one.args, vec!["dnf", "upgrade", "vim-enhanced"]);
+        let all = source_upgrade_command(SourceId::Dnf, "");
+        assert_eq!(all.program, "sudo");
+        assert_eq!(all.args, vec!["dnf", "upgrade"]);
+    }
+
+    #[test]
+    fn dnf_remove_ignores_depth() {
+        // rpm has no purge/config concept; every depth maps to a plain remove.
+        for d in [RemoveDepth::Package, RemoveDepth::WithDeps, RemoveDepth::Purge] {
+            let c = remove_command_dnf("vim-enhanced", d);
+            assert_eq!(c.program, "sudo");
+            assert_eq!(c.args, vec!["dnf", "remove", "vim-enhanced"]);
+        }
     }
 
     #[test]
@@ -895,8 +966,8 @@ mod tests {
 
     #[test]
     fn installed_stats_total() {
-        let s = InstalledStats { repo: 1208, foreign: 77, flatpak: 12, apt: 3 };
-        assert_eq!(s.total(), 1300);
+        let s = InstalledStats { repo: 1208, foreign: 77, flatpak: 12, apt: 3, dnf: 5 };
+        assert_eq!(s.total(), 1305);
     }
 
     #[test]

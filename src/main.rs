@@ -412,20 +412,27 @@ fn spawn_stats_tasks(tx: UnboundedSender<AppEvent>, aur_helper: Option<String>, 
         // apt: dpkg-query lists installed packages; empty on a non-apt system.
         let apt_text = if sources::which("apt-get") { apt_installed_text().await } else { String::new() };
         let apt_count = sources::installed::count_lines(&apt_text);
+        // dnf: rpm -qa lists installed packages; empty on a non-dnf system.
+        let dnf_text = if sources::which("dnf") { dnf_installed_text().await } else { String::new() };
+        let dnf_count = sources::installed::count_lines(&dnf_text);
         let _ = tx_inst.send(AppEvent::Stats(crate::model::InstalledStats {
             repo,
             foreign,
             flatpak: fp_count,
             apt: apt_count,
+            dnf: dnf_count,
         }));
 
         // Build the installed index from whichever native manager is present:
-        // `pacman -Q` on Arch, else dpkg-query on Debian. Both parse as
-        // `name version` per line, so search rows show installed state either way.
+        // `pacman -Q` on Arch, `rpm -qa` on Fedora, else dpkg-query on Debian. All
+        // parse as `name version` per line, so search rows show installed state.
         let mut idx = match Command::new("pacman").arg("-Q").output().await {
             Ok(out) => sources::installed::InstalledIndex::from_query_output(
                 &String::from_utf8_lossy(&out.stdout),
             ),
+            Err(_) if !dnf_text.is_empty() => {
+                sources::installed::InstalledIndex::from_query_output(&dnf_text)
+            }
             Err(_) => sources::installed::InstalledIndex::from_query_output(&apt_text),
         };
         // Fold installed Flatpak app IDs into the index so search results show
@@ -501,6 +508,16 @@ fn spawn_stats_tasks(tx: UnboundedSender<AppEvent>, aur_helper: Option<String>, 
             list.extend(apt_list);
             list.sort_by(|a, b| a.name.cmp(&b.name));
         }
+        // Append installed dnf/rpm packages (Fedora; origin "dnf") with explicit /
+        // orphan flags, size, and install time from rpm's own %{INSTALLTIME}. The
+        // pacman branch above is empty on a non-Arch box, so this fills the list.
+        if sources::which("dnf") {
+            let rpm = dnf_installed_list_text().await;
+            let userinstalled = sources::installed::name_set(&dnf_userinstalled_text().await);
+            let unneeded = sources::installed::name_set(&dnf_unneeded_text().await);
+            list.extend(sources::installed::parse_installed_dnf(&rpm, &userinstalled, &unneeded));
+            list.sort_by(|a, b| a.name.cmp(&b.name));
+        }
         // Append installed Flatpak apps (origin "flatpak"); size came from the
         // list column, the date is the deploy dir mtime. Then re-sort by name.
         if flatpak {
@@ -541,11 +558,15 @@ fn spawn_stats_tasks(tx: UnboundedSender<AppEvent>, aur_helper: Option<String>, 
         let apt_upg =
             if sources::which("apt-get") { Some(apt_upgradable_text().await) } else { None };
         let apt_count = apt_upg.as_deref().map(sources::updates::parse_apt_upgradable_count);
+        // One `dnf list --upgrades` call feeds both the count and the list.
+        let dnf_upg = if sources::which("dnf") { Some(dnf_upgrades_text().await) } else { None };
+        let dnf_count = dnf_upg.as_deref().map(sources::updates::parse_dnf_upgrades_count);
         let _ = tx.send(AppEvent::Updates(crate::model::UpdatesInfo {
             repo,
             aur,
             flatpak: flatpak_count,
             apt: apt_count,
+            dnf: dnf_count,
         }));
 
         let mut list = Vec::new();
@@ -565,6 +586,9 @@ fn spawn_stats_tasks(tx: UnboundedSender<AppEvent>, aur_helper: Option<String>, 
         }
         if let Some(t) = &apt_upg {
             list.extend(sources::updates::parse_apt_upgradable_list(t));
+        }
+        if let Some(t) = &dnf_upg {
+            list.extend(sources::updates::parse_dnf_upgrades_list(t));
         }
         let _ = tx.send(AppEvent::UpdatesList(list));
     });
@@ -646,6 +670,65 @@ async fn apt_upgradable_text() -> String {
         .output()
         .await
     {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Installed rpm packages as `name<TAB>version` lines (via `rpm -qa`), or empty
+/// on failure / a non-dnf system. Feeds both the installed count and the index.
+async fn dnf_installed_text() -> String {
+    match Command::new("rpm").args(["-qa", "--qf", "%{NAME}\t%{EVR}\n"]).output().await {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Installed rpm packages as `name<TAB>evr<TAB>size-bytes<TAB>install-time` lines
+/// for the Manage list, or empty on failure. Parsed by `parse_installed_dnf`.
+async fn dnf_installed_list_text() -> String {
+    match Command::new("rpm")
+        .args(["-qa", "--qf", "%{NAME}\t%{EVR}\t%{SIZE}\t%{INSTALLTIME}\n"])
+        .output()
+        .await
+    {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+/// `dnf repoquery --userinstalled` names (explicitly installed), or empty on
+/// failure. Feeds the `explicit` flag in the Manage list.
+async fn dnf_userinstalled_text() -> String {
+    match Command::new("dnf")
+        .env("LC_ALL", "C")
+        .args(["repoquery", "--userinstalled", "--qf", "%{name}\n"])
+        .output()
+        .await
+    {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+/// `dnf repoquery --unneeded` names (the orphan set: installed as deps, now
+/// required by nothing), or empty on failure.
+async fn dnf_unneeded_text() -> String {
+    match Command::new("dnf")
+        .env("LC_ALL", "C")
+        .args(["repoquery", "--unneeded", "--qf", "%{name}\n"])
+        .output()
+        .await
+    {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+/// `dnf list --upgrades` stdout, or empty on failure. Parsed by
+/// `parse_dnf_upgrades_count` / `parse_dnf_upgrades_list`.
+async fn dnf_upgrades_text() -> String {
+    match Command::new("dnf").env("LC_ALL", "C").args(["list", "--upgrades"]).output().await {
         Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
         Err(_) => String::new(),
     }
@@ -804,6 +887,24 @@ fn dispatch_manage_detail(app: &mut App, tx: &UnboundedSender<AppEvent>) {
             let rd_text = rd.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
             d.required_by = sources::installed::parse_rdepends(&rd_text);
             d
+        } else if origin == "dnf" {
+            let out = Command::new("rpm").env("LC_ALL", "C").args(["-qi", &name]).output().await;
+            let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            let mut d = sources::installed::parse_rpm_info(&text);
+            d.explicit = explicit;
+            if let Some(ts) = install_date {
+                d.install_date = sources::installed::format_epoch_date(ts);
+            }
+            // Reverse depends ("required by") from the installed packages that
+            // require this one.
+            let rd = Command::new("dnf")
+                .env("LC_ALL", "C")
+                .args(["repoquery", "--installed", "--whatrequires", &name, "--qf", "%{name}\n"])
+                .output()
+                .await;
+            let rd_text = rd.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            d.required_by = rd_text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+            d
         } else {
             let out = Command::new("pacman").arg("-Qi").arg(&name).output().await;
             let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
@@ -852,6 +953,28 @@ async fn fetch_detail(
             // parse the first (Candidate) paragraph.
             let out = Command::new("apt-cache").arg("show").arg(name).output().await.ok()?;
             Some(sources::apt::parse_show_output(&String::from_utf8_lossy(&out.stdout)))
+        }
+        SourceId::Dnf => {
+            // `name` is the package name. `dnf info` gives url/license/size; a
+            // second `repoquery --requires --resolve` fills the dependency list.
+            let out = Command::new("dnf")
+                .env("LC_ALL", "C")
+                .args(["info", name])
+                .output()
+                .await
+                .ok()?;
+            let mut detail =
+                sources::dnf::parse_info_output(&String::from_utf8_lossy(&out.stdout));
+            let req = Command::new("dnf")
+                .env("LC_ALL", "C")
+                .args(["repoquery", "--requires", "--resolve", "--qf", "%{name}\n", name])
+                .output()
+                .await;
+            if let Ok(req) = req {
+                detail.depends =
+                    sources::dnf::parse_requires(&String::from_utf8_lossy(&req.stdout));
+            }
+            Some(detail)
         }
     }
 }

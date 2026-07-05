@@ -140,6 +140,47 @@ pub fn parse_dpkg_status(text: &str) -> PkgDetail {
     }
 }
 
+/// Parse `rpm -qi <pkg>` (aligned `Key        : value`, some keys multi-word like
+/// `Build Date`) into the Manage detail pane. The header ends at the trailing
+/// `Description :` block, which is multi-line prose and would misparse, so
+/// parsing stops there; the short synopsis comes from `Summary`. `Size` is bytes.
+/// Reverse deps and depends are not in `rpm -qi`, so they stay empty (the caller
+/// fills `explicit`/`install_date` and `required_by`).
+pub fn parse_rpm_info(text: &str) -> PkgDetail {
+    let mut fields: HashMap<String, String> = HashMap::new();
+    for line in text.lines() {
+        if let Some((k, v)) = line.split_once(':') {
+            let key = k.trim();
+            if key == "Description" {
+                break; // prose block follows; stop reading headers
+            }
+            if key.is_empty() {
+                continue;
+            }
+            fields.entry(key.to_string()).or_insert_with(|| v.trim().to_string());
+        }
+    }
+    let get = |k: &str| fields.get(k).cloned().unwrap_or_default();
+    let size = fields
+        .get("Size")
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|bytes| crate::sources::apt::format_kib(bytes / 1024))
+        .unwrap_or_default();
+    PkgDetail {
+        name: get("Name"),
+        version: get("Version"),
+        description: get("Summary"),
+        url: get("URL"),
+        explicit: false, // set by the caller from the installed list
+        install_date: String::new(),
+        build_date: get("Build Date"),
+        size,
+        required_by: Vec::new(),
+        optional_for: Vec::new(),
+        depends: Vec::new(),
+    }
+}
+
 /// Format a unix timestamp (secs) as "YYYY-MM-DD HH:MM" in UTC. Plaza has no date
 /// library; this uses the standard days-to-civil algorithm (Howard Hinnant).
 pub fn format_epoch_date(secs: i64) -> String {
@@ -385,6 +426,43 @@ pub fn parse_apt_list_names(output: &str) -> Vec<String> {
         .collect()
 }
 
+/// Build the installed list from `rpm -qa --qf '%{NAME}\t%{EVR}\t%{SIZE}\t
+/// %{INSTALLTIME}\n'`, flagging explicit (`dnf repoquery --userinstalled`) and
+/// orphan (`dnf repoquery --unneeded`). Size is bytes (stored directly). Origin
+/// is the flat "dnf". The 4th field (install time, epoch secs) fills
+/// `install_date` when present. Sorted by name.
+pub fn parse_installed_dnf(
+    rpm: &str,
+    userinstalled: &std::collections::HashSet<String>,
+    unneeded: &std::collections::HashSet<String>,
+) -> Vec<InstalledPkg> {
+    let mut list: Vec<InstalledPkg> = rpm
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let name = parts.next()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let version = parts.next().unwrap_or_default().trim().to_string();
+            let size = parts.next().and_then(|s| s.trim().parse::<u64>().ok());
+            let install_date = parts.next().and_then(|s| s.trim().parse::<i64>().ok());
+            Some(InstalledPkg {
+                explicit: userinstalled.contains(name),
+                orphan: unneeded.contains(name),
+                display: name.to_string(),
+                name: name.to_string(),
+                version,
+                origin: "dnf".to_string(),
+                size,
+                install_date,
+            })
+        })
+        .collect();
+    list.sort_by(|a, b| a.name.cmp(&b.name));
+    list
+}
+
 /// Map package name -> last install/upgrade time (epoch secs) from the mtimes of
 /// `<dir>/*.list` files. dpkg rewrites a package's `.list` on install/upgrade. A
 /// missing/unreadable dir yields an empty map (dates just stay None).
@@ -612,5 +690,58 @@ Homepage: http://tiswww.case.edu/php/chet/bash/
         let s = name_set("a 1.0\nb\n\n c\n");
         assert!(s.contains("a") && s.contains("b") && s.contains("c"));
         assert_eq!(s.len(), 3);
+    }
+
+    #[test]
+    fn parse_installed_dnf_flags_size_and_date() {
+        let rpm = "bash\t5.2.26-4.fc41\t8192\t1735689600\nlibfoo\t1.0-1.fc41\t512\t1735689601\nvim-enhanced\t2:9.1.158-1.fc41\t4096\t\n";
+        let userinstalled: std::collections::HashSet<String> =
+            ["bash".to_string(), "vim-enhanced".to_string()].into_iter().collect();
+        let unneeded: std::collections::HashSet<String> =
+            ["libfoo".to_string()].into_iter().collect();
+        let list = parse_installed_dnf(rpm, &userinstalled, &unneeded);
+        assert_eq!(list.len(), 3);
+        let by = |n: &str| list.iter().find(|p| p.name == n).unwrap().clone();
+        assert_eq!(by("bash").origin, "dnf");
+        assert_eq!(by("bash").version, "5.2.26-4.fc41");
+        assert_eq!(by("bash").size, Some(8192)); // stored as bytes directly
+        assert_eq!(by("bash").install_date, Some(1735689600));
+        assert!(by("bash").explicit && !by("bash").orphan);
+        assert!(by("libfoo").orphan && !by("libfoo").explicit);
+        assert!(by("vim-enhanced").explicit);
+        assert_eq!(by("vim-enhanced").install_date, None); // missing 4th field
+        assert!(parse_installed_dnf("", &userinstalled, &unneeded).is_empty());
+    }
+
+    #[test]
+    fn parse_rpm_info_reads_headers_and_size() {
+        let out = "\
+Name        : vim-enhanced
+Epoch       : 2
+Version     : 9.1.158
+Release     : 1.fc41
+Architecture: x86_64
+Install Date: Wed 01 Jan 2025 12:00:00 AM UTC
+Size        : 4658291
+License     : Vim AND LGPL-2.1-or-later
+Source RPM  : vim-9.1.158-1.fc41.src.rpm
+Build Date  : Mon 30 Dec 2024 10:00:00 AM UTC
+URL         : http://www.vim.org/
+Summary     : A version of the VIM editor
+Description :
+VIM (VIsual editor iMproved) is an updated and improved version of the
+vi editor. See: the manual for details.
+";
+        let d = parse_rpm_info(out);
+        assert_eq!(d.name, "vim-enhanced");
+        assert_eq!(d.version, "9.1.158");
+        assert_eq!(d.description, "A version of the VIM editor");
+        assert_eq!(d.url, "http://www.vim.org/");
+        assert_eq!(d.size, "4.44 MiB"); // 4658291 bytes -> KiB -> MiB
+        assert_eq!(d.build_date, "Mon 30 Dec 2024 10:00:00 AM UTC");
+        // the multi-word "Install Date" key is read, not mistaken for prose
+        assert_eq!(d.install_date, String::new()); // caller fills from the list
+        // the "See: the manual" prose line after Description must not leak in
+        assert!(d.required_by.is_empty() && d.depends.is_empty());
     }
 }

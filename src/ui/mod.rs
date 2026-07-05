@@ -158,6 +158,8 @@ pub fn source_icon(app: &App, source: SourceId) -> &str {
         // ponytail: reuse the repo glyph for apt; a dedicated apt icon is a
         // theming follow-up, not needed for v1.
         SourceId::Apt => &app.skin.icons.repo,
+        // dnf is a repo-based system manager like pacman/apt; reuse the repo glyph.
+        SourceId::Dnf => &app.skin.icons.repo,
     }
 }
 
@@ -172,6 +174,7 @@ pub fn badge_span(app: &App, label: &str, source: SourceId, count: usize) -> Spa
         // ponytail: apt reuses the repo badge color; it is a repo-based system
         // manager like pacman.
         SourceId::Apt => app.palette.badge_repo,
+        SourceId::Dnf => app.palette.badge_repo,
     };
     let icon = source_icon(app, source);
     let icon = if icon.is_empty() { String::new() } else { format!("{icon} ") };
@@ -476,6 +479,8 @@ mod tests {
         assert_eq!(source_icon(&app, SourceId::Pacman), app.skin.icons.repo);
         assert_eq!(source_icon(&app, SourceId::Aur), app.skin.icons.aur);
         assert_eq!(source_icon(&app, SourceId::Flatpak), app.skin.icons.flatpak);
+        assert_eq!(source_icon(&app, SourceId::Apt), app.skin.icons.repo);
+        assert_eq!(source_icon(&app, SourceId::Dnf), app.skin.icons.repo);
         app.skin.icons.enabled = false;
         assert_eq!(source_icon(&app, SourceId::Aur), "");
     }

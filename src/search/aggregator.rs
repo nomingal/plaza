@@ -143,6 +143,8 @@ fn source_order(id: SourceId) -> u8 {
         SourceId::Aur => 1,
         SourceId::Flatpak => 2,
         SourceId::Apt => 3,
+        // dnf sits at the system-manager tier, like apt; the two never coexist.
+        SourceId::Dnf => 3,
     }
 }
 

@@ -1,5 +1,6 @@
 pub mod apt;
 pub mod aur;
+pub mod dnf;
 pub mod flatpak;
 pub mod installed;
 pub mod pacman;
@@ -68,6 +69,9 @@ pub fn detect_sources(disabled: &[SourceId]) -> Vec<Box<dyn Source>> {
     }
     if which("apt-get") && !disabled.contains(&SourceId::Apt) {
         sources.push(Box::new(apt::AptSource::new()));
+    }
+    if which("dnf") && !disabled.contains(&SourceId::Dnf) {
+        sources.push(Box::new(dnf::DnfSource::new()));
     }
     sources
 }

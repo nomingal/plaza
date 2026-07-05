@@ -4,26 +4,28 @@
 
 Plaza is a customizable and riceable terminal UI for finding, installing, and managing packages. You search
 once and it queries every package source on the system at the same time. On Arch
-that means the official repositories and the AUR; on Debian it means apt. Results
-are merged into one list, so a package name shows up once even when several sources
-provide it. A separate Manage view lists everything installed, shows what has
-updates, and lets you remove or upgrade without leaving Plaza. Actions run in a
-background pane backed by a real terminal, so you can keep working while one runs.
+that means the official repositories and the AUR; on Debian it means apt; on
+Fedora it means dnf. Results are merged into one list, so a package name shows up
+once even when several sources provide it. A separate Manage view lists everything
+installed, shows what has updates, and lets you remove or upgrade without leaving
+Plaza. Actions run in a background pane backed by a real terminal, so you can keep
+working while one runs.
 
-Plaza supports Arch (pacman and the AUR) and Debian (apt), and also searches
-Flatpak (Flathub) when it is set up. The source backends sit behind a trait, so
-dnf, zypper, and snap can be added later. Search, detail, install, and the Manage
-view (installed list, removal, and upgrade) all work for every enabled source:
-pacman, the AUR, apt, and Flatpak. Plaza shows only what fits the system it runs
-on, so Arch-specific controls do not appear on Debian and the reverse.
+Plaza supports Arch (pacman and the AUR), Debian (apt), and Fedora (dnf), and also
+searches Flatpak (Flathub) when it is set up. The source backends sit behind a
+trait, so zypper, snap, and others can be added later. Search, detail, install,
+and the Manage view (installed list, removal, and upgrade) all work for every
+enabled source: pacman, the AUR, apt, dnf, and Flatpak. Plaza shows only what fits
+the system it runs on, so Arch-specific controls do not appear on Debian or Fedora
+and the reverse.
 
 ## What it does
 
 Search:
 
 - Queries all sources at once: the official repos and the AUR on Arch, apt on
-  Debian, and Flatpak (Flathub) when it is configured. Packages with the same name
-  across sources are merged into one row.
+  Debian, dnf on Fedora, and Flatpak (Flathub) when it is configured. Packages
+  with the same name across sources are merged into one row.
 - Groups name variants (`gimp`, `gimp-bin`, `gimp-git`) and a name-matching
   Flatpak into a single row, so you pick the edition from the detail view.
   Matching uses the Flatpak app ID, then a normalized name, so a Flatpak whose
@@ -115,7 +117,8 @@ General:
 ## Requirements
 
 On Debian and Ubuntu, apt and dpkg are all Plaza needs; they are part of the
-base system. The rest of this list applies to Arch:
+base system. On Fedora, dnf and rpm are likewise all it needs. The rest of this
+list applies to Arch:
 
 - pacman, for official-repo search, install, and removal
 - an AUR helper (yay or paru), for AUR installs and upgrades. AUR search itself

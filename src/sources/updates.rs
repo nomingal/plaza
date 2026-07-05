@@ -40,6 +40,44 @@ pub fn parse_apt_upgradable_list(output: &str) -> Vec<UpdateEntry> {
         .collect()
 }
 
+/// A row from `dnf list --upgrades` is `name.arch  new-version  repo`. Real rows
+/// have three whitespace fields whose first token is a `name.arch` (contains a
+/// dot); header lines ("Available upgrades", "Upgraded Packages") do not.
+fn is_dnf_upgrade_row(line: &str) -> bool {
+    let mut parts = line.split_whitespace();
+    let (Some(first), Some(_), Some(_)) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    parts.next().is_none() && first.contains('.')
+}
+
+/// Count package rows in `dnf list --upgrades`, skipping header lines.
+pub fn parse_dnf_upgrades_count(output: &str) -> usize {
+    output.lines().filter(|l| is_dnf_upgrade_row(l)).count()
+}
+
+/// Parse `dnf list --upgrades` into update entries. The name has its `.arch`
+/// suffix stripped; dnf does not print the current version here, so `old_version`
+/// stays empty.
+pub fn parse_dnf_upgrades_list(output: &str) -> Vec<UpdateEntry> {
+    output
+        .lines()
+        .filter(|l| is_dnf_upgrade_row(l))
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let name_arch = parts.next()?;
+            let new_version = parts.next().unwrap_or_default().to_string();
+            let name = name_arch.rsplit_once('.').map(|(n, _)| n).unwrap_or(name_arch);
+            Some(UpdateEntry {
+                name: name.to_string(),
+                old_version: String::new(),
+                new_version,
+                source_id: SourceId::Dnf,
+            })
+        })
+        .collect()
+}
+
 /// One upgradable package with its current and target version, tagged with the
 /// source it came from (repos vs AUR).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +146,26 @@ mod tests {
         assert_eq!(list[0].old_version, "2:9.0-1");
         assert_eq!(list[0].source_id, SourceId::Apt);
         assert!(parse_apt_upgradable_list("Listing...\n").is_empty());
+    }
+
+    #[test]
+    fn counts_and_parses_dnf_upgrades() {
+        let out = "\
+Available upgrades
+vim-enhanced.x86_64        2:9.1.160-1.fc41    updates
+curl.x86_64                8.6.0-9.fc41        updates
+";
+        assert_eq!(parse_dnf_upgrades_count(out), 2);
+        assert_eq!(parse_dnf_upgrades_count("Available upgrades\n"), 0);
+        assert_eq!(parse_dnf_upgrades_count(""), 0);
+        let list = parse_dnf_upgrades_list(out);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].name, "vim-enhanced");
+        assert_eq!(list[0].new_version, "2:9.1.160-1.fc41");
+        assert_eq!(list[0].old_version, "");
+        assert_eq!(list[0].source_id, SourceId::Dnf);
+        assert_eq!(list[1].name, "curl");
+        assert!(parse_dnf_upgrades_list("Available upgrades\n").is_empty());
     }
 
     #[test]
