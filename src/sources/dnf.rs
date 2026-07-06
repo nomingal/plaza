@@ -35,7 +35,7 @@ impl Source for DnfSource {
         }
         let repoquery_out = Command::new("dnf")
             .env("LC_ALL", "C")
-            .args(["repoquery", "--qf", "%{name}\t%{evr}\t%{reponame}\n", "--latest-limit=1"])
+            .args(["repoquery", "--qf", "%{name}\t%{evr}\t%{repoid}\n", "--latest-limit=1"])
             .args(&names)
             .output()
             .await?;
@@ -58,18 +58,19 @@ fn strip_arch(token: &str) -> &str {
     token.rsplit_once('.').map(|(n, _)| n).unwrap_or(token)
 }
 
-/// Parse `dnf search <q>` output into `(name, summary)` pairs. Package lines are
-/// `name.arch: summary` (dnf5) or `name.arch : summary` (dnf4); section headers
-/// like `Matched fields: name` or `=== ... Matched: ===` have whitespace in the
-/// part before the colon (a package `name.arch` never does) and are skipped.
+/// Parse `dnf search <q>` output into `(name, summary)` pairs. dnf5 prints each
+/// match as `name.arch<TAB>summary` (indented by a space); dnf4 used
+/// `name.arch : summary`. Section headers ("Matched fields: name (exact)") and
+/// the repo-loading chatter (dnf writes that to stderr anyway) carry whitespace
+/// in the part before the separator, which a package `name.arch` never does, so
+/// they are skipped.
 pub fn parse_search_output(output: &str) -> Vec<(String, String)> {
     output
         .lines()
         .filter_map(|line| {
-            let (left, summary) = line.split_once(':')?;
+            // dnf5 separates with a tab; fall back to the dnf4 colon form.
+            let (left, summary) = line.split_once('\t').or_else(|| line.split_once(':'))?;
             let left = left.trim();
-            // Headers ("Matched fields", "Name Exactly Matched") carry spaces;
-            // a package token is a single `name.arch`.
             if left.is_empty() || left.contains(char::is_whitespace) || !left.contains('.') {
                 return None;
             }
@@ -78,9 +79,10 @@ pub fn parse_search_output(output: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Parse `dnf repoquery --qf '%{name}\t%{evr}\t%{reponame}\n'` into a map of
-/// name -> (evr, reponame). The first line for a name wins (repoquery is run
-/// with `--latest-limit=1`, so that is the newest candidate).
+/// Parse `dnf repoquery --qf '%{name}\t%{evr}\t%{repoid}\n'` into a map of
+/// name -> (evr, repoid). The first line for a name wins (repoquery is run
+/// with `--latest-limit=1`, so that is the newest candidate). `%{repoid}` is the
+/// short repo id ("fedora", "updates"), not the pretty `%{reponame}`.
 pub fn parse_repoquery(output: &str) -> HashMap<String, (String, String)> {
     let mut map = HashMap::new();
     for line in output.lines() {
@@ -155,9 +157,11 @@ pub fn parse_info_output(text: &str) -> PackageDetail {
     }
 }
 
-/// Parse `dnf repoquery --requires --resolve --qf '%{name}\n'` (one dependency
-/// package name per line) into a deduped list. Any version constraint or file
-/// path fragment after the bare name token is dropped; blank lines are ignored.
+/// Parse `dnf repoquery --providers-of=requires --qf '%{name}\n'` (one dependency
+/// package name per line) into a deduped list. dnf5 dropped `--requires --resolve`
+/// and forbids `--qf` with `--requires`, so `--providers-of=requires` is the way
+/// to resolve requirements to package names. Any version constraint or file path
+/// fragment after the bare name token is dropped; blank lines are ignored.
 pub fn parse_requires(output: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in output.lines() {
@@ -178,22 +182,36 @@ mod tests {
 
     #[test]
     fn parses_search_names_and_skips_headers() {
+        // Real dnf5 output: tab-separated, package lines indented by one space,
+        // with "Matched fields:" section headers between the groups.
         let out = "\
-Matched fields: name
-vim-minimal.x86_64: A minimal version of the VIM editor
-vim-enhanced.x86_64: A version of the VIM editor which includes: recent enhancements
+Matched fields: name (exact)
+ ripgrep.x86_64\tLine-oriented search tool
 Matched fields: name, summary
-protobuf-vim.noarch : Vim syntax highlighting
+ ripgrep-edit.x86_64\tEdit ripgrep search results across multiple files
+ ripgrep-edit-emacs.noarch\tUse Emacs to edit ripgrep search results
 ";
         let hits = parse_search_output(out);
         assert_eq!(hits.len(), 3);
-        assert_eq!(hits[0], ("vim-minimal".to_string(), "A minimal version of the VIM editor".to_string()));
-        // summary may itself contain a colon; only the first colon splits
-        assert_eq!(hits[1].0, "vim-enhanced");
-        assert_eq!(hits[1].1, "A version of the VIM editor which includes: recent enhancements");
-        // dnf4-style "name.arch : summary" also parses, arch stripped
-        assert_eq!(hits[2].0, "protobuf-vim");
+        assert_eq!(hits[0], ("ripgrep".to_string(), "Line-oriented search tool".to_string()));
+        assert_eq!(hits[1].0, "ripgrep-edit");
+        assert_eq!(hits[2].0, "ripgrep-edit-emacs");
         assert!(parse_search_output("").is_empty());
+    }
+
+    #[test]
+    fn parses_search_dnf4_colon_form() {
+        // dnf4 used "name.arch : summary"; the colon fallback still handles it.
+        let out = "\
+vim-enhanced.x86_64: A version of the VIM editor which includes: extras
+protobuf-vim.noarch : Vim syntax highlighting
+";
+        let hits = parse_search_output(out);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, "vim-enhanced");
+        // only the first colon splits, so a colon in the summary is preserved
+        assert_eq!(hits[0].1, "A version of the VIM editor which includes: extras");
+        assert_eq!(hits[1].0, "protobuf-vim");
     }
 
     #[test]
@@ -206,7 +224,7 @@ protobuf-vim.noarch : Vim syntax highlighting
 
     #[test]
     fn build_hits_joins_and_drops_unmatched() {
-        let search = "vim-enhanced.x86_64: Enhanced vi\norphan.noarch: not in repoquery\n";
+        let search = "vim-enhanced.x86_64\tEnhanced vi\norphan.noarch\tnot in repoquery\n";
         let repoquery = "vim-enhanced\t2:9.1.158-1.fc41\tupdates\n";
         let hits = build_hits(search, repoquery);
         assert_eq!(hits.len(), 1); // orphan without a repoquery candidate is dropped

@@ -956,7 +956,7 @@ async fn fetch_detail(
         }
         SourceId::Dnf => {
             // `name` is the package name. `dnf info` gives url/license/size; a
-            // second `repoquery --requires --resolve` fills the dependency list.
+            // second repoquery fills the dependency list.
             let out = Command::new("dnf")
                 .env("LC_ALL", "C")
                 .args(["info", name])
@@ -965,9 +965,11 @@ async fn fetch_detail(
                 .ok()?;
             let mut detail =
                 sources::dnf::parse_info_output(&String::from_utf8_lossy(&out.stdout));
+            // dnf5 dropped `--requires --resolve` and forbids `--qf` with
+            // `--requires`; `--providers-of=requires` resolves them to packages.
             let req = Command::new("dnf")
                 .env("LC_ALL", "C")
-                .args(["repoquery", "--requires", "--resolve", "--qf", "%{name}\n", name])
+                .args(["repoquery", "--providers-of=requires", "--qf", "%{name}\n", name])
                 .output()
                 .await;
             if let Ok(req) = req {
