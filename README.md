@@ -2,131 +2,129 @@
 
 ![Plaza demo](demo.gif)
 
-Plaza is a customizable and riceable terminal UI for finding, installing, and managing packages. You search
-once and it queries every package source on the system at the same time. On Arch
-that means the official repositories and the AUR; on Debian it means apt; on
-Fedora it means dnf. Results are merged into one list, so a package name shows up
-once even when several sources provide it. A separate Manage view lists everything
-installed, shows what has updates, and lets you remove or upgrade without leaving
-Plaza. Actions run in a background pane backed by a real terminal, so you can keep
-working while one runs.
+Plaza is a customizable, riceable terminal UI for finding, installing, and
+managing packages. You search once and it queries every package source on the
+system at the same time, then merges the results into one list so a package shows
+up a single time even when several sources provide it. A separate Manage view
+lists everything installed, marks what has updates, and removes or upgrades
+without leaving Plaza. Every action runs in a background pane backed by a real
+terminal, so you keep working while one runs.
 
-Plaza supports Arch (pacman and the AUR), Debian (apt), and Fedora (dnf), and also
-searches Flatpak (Flathub) when it is set up. The source backends sit behind a
-trait, so zypper, snap, and others can be added later. Search, detail, install,
-and the Manage view (installed list, removal, and upgrade) all work for every
-enabled source: pacman, the AUR, apt, dnf, and Flatpak. Plaza shows only what fits
-the system it runs on, so Arch-specific controls do not appear on Debian or Fedora
+Plaza adapts to the machine it runs on: it shows only the sources and controls
+that fit the system, so Arch-specific options never appear on Debian or Fedora,
 and the reverse.
 
-## What it does
+## Supported sources
 
-Search:
+| System | Sources |
+| --- | --- |
+| Arch | pacman (official repos) and the AUR |
+| Debian and Ubuntu | apt |
+| Fedora | dnf |
+| Any of the above | Flatpak (Flathub), when a remote is configured |
 
-- Queries all sources at once: the official repos and the AUR on Arch, apt on
-  Debian, dnf on Fedora, and Flatpak (Flathub) when it is configured. Packages
-  with the same name across sources are merged into one row.
+Search, detail, install, removal, and upgrade all work for every enabled source.
+The backends sit behind a `Source` trait, so zypper, snap, and others can be
+added later.
+
+## Search
+
+- Queries every source at once and merges packages with the same name into one
+  row. Results stream in as each source replies, so a slow or offline source
+  never blocks the rest.
 - Groups name variants (`gimp`, `gimp-bin`, `gimp-git`) and a name-matching
-  Flatpak into a single row, so you pick the edition from the detail view.
-  Matching uses the Flatpak app ID, then a normalized name, so a Flatpak whose
-  app name matches a repo package joins its row (multi-word app names stay on
+  Flatpak into a single row; you pick the edition from the detail view. Flatpak
+  matching uses the app ID, then a normalized name (multi-word app names stay on
   their own to avoid wrong merges). Two independent options control this: "Stack
-  package variants" (the `-bin`/`-git` family) and "Group matching Flatpak"; turn
+  package variants" (the `-bin`/`-git` family) and "Group matching Flatpak". Turn
   either off for one row per exact name.
+- Shows every repo or source that provides a package, with versions and what is
+  already installed. The repo the native tool installs from by default is marked,
+  and you can install from a specific repo instead.
 - A grouped row shows one badge per source. When several variants share a source,
   the "Variant badge" option renders them as a count (`aur ×3`, the default) or
-  repeated (`aur aur aur`). Badges carry the skin's per-source icon
-  (repo/aur/flatpak) when icons are enabled.
-- Shows every repo or source that provides a package, with versions and what is
-  already installed. The repo pacman installs from by default is marked.
-- Can install from a specific repo instead of the default.
-- Streams results in as each source replies, so a slow or offline source does not
-  block the rest.
+  repeated (`aur aur aur`). Badges carry the skin's per-source icon when icons are
+  enabled.
 - Flags AUR packages whose PKGBUILD changed in the last seven days.
 
-Manage:
+## Manage
 
 - Lists every installed package with its origin repo (or `aur`), filterable by
-  typing.
-- Sorts the list by name, size, or updated (last install/upgrade) from the filter
-  box (`f`) `sort` section. The active key shows a direction arrow; pick it again
-  to flip ascending/descending. The "Float upgradable to top" option (on by
-  default, in the options menu) keeps upgradable packages above the sorted order.
-  Upgradable packages are marked with the new version. Size and dates cover pacman
-  and Flatpak packages.
-- Removes the selected package at a configurable depth (`-Rs` by default, also
-  `-Rns` or `-R`, set in options).
+  typing. Upgradable packages are marked with the new version.
+- Sorts the list by name, size, or last install/upgrade date from the filter box
+  (`f`) `sort` section. The active key shows a direction arrow; pick it again to
+  flip ascending and descending. "Float upgradable to top" (on by default) keeps
+  upgradable packages above the sorted order.
+- Removes the selected package at a configurable depth. On Arch that is `-Rs` by
+  default (also `-Rns` or `-R`); apt maps the depth to its own verbs; dnf removes
+  the package directly.
 - Upgrades per source or all at once from the sidebar `UPDATES/INSTALLED` block:
-  press Enter on a source row to upgrade that source, or Enter on the `total`
-  row to upgrade all. "All" chains each source in one task (`sudo pacman -Syu &&
-  paru -Sua`, using whichever AUR helper you have). Press Enter on an upgradable
-  package in the Manage list to open a small menu (upgrade just that package,
-  remove it, or cancel); for an up-to-date package Enter goes straight to remove.
-  Press `u` from anywhere to jump focus to the sidebar upgrade block (cursor on
-  `total`, so a following Enter upgrades all).
-- Shows a detail pane beside the list (`pacman -Qi` for the highlighted package):
-  version, install date, build date, size, install reason (explicit or
-  dependency), what requires it, and what it depends on. Loaded as the selection
-  moves. The pane hides on narrow terminals.
-- Filters the list by installation reason from the filter box (`f`): all,
-  explicitly installed only, or orphans (dependencies nothing requires,
-  `pacman -Qdt`). The box's `sort` section sets the key and direction. Save the
-  current reason, sort, and filter choices as the launch default with `s`.
+  press Enter on a source row to upgrade that source, or on the `total` row to
+  upgrade everything. "All" chains each source into one task. Press Enter on an
+  upgradable package in the list for a small menu (upgrade just that package,
+  remove it, or cancel); on an up-to-date package Enter goes straight to remove.
+  Press `u` from anywhere to jump to the sidebar upgrade block with the cursor on
+  `total`, so a following Enter upgrades all.
+- Shows a detail pane beside the list using the native query (`pacman -Qi`,
+  `rpm -qi`, or dpkg): version, install and build date, size, install reason
+  (explicit or dependency), what requires it, and what it depends on. It follows
+  the selection and hides on narrow terminals.
+- Filters by installation reason from the filter box: all, explicitly installed
+  only, or orphans (dependencies nothing requires). Save the current reason, sort,
+  and filter as the launch default with `s`.
 
-General:
+## Actions and the queue
 
-- Filters either list by repository. Press `f` for a checkbox box in the sidebar
-  to show only the repos you pick (toggle one repo, all pacman repos at once, or
-  the AUR). In the Manage view the box also has a reason section (all, explicit,
-  orphans) and a sort section (name, size, updated). It
-  follows the collapse-repos option. By default the box appears only
-  while you are in it or while a filter is active; turn off "hide filter box when
-  not in use" in options to keep it on screen at all times. Search and Manage
-  keep separate filters, so hiding a repo in one view does not affect the other.
-  Press `s` in the box to save the current view's filter as its launch default;
-  otherwise the selection resets each launch.
 - Actions run in a background pane backed by a real terminal, so sudo prompts and
-  AUR build questions work normally. A hotkey returns you to it.
+  AUR build questions work normally. A hotkey returns you to the pane.
 - Confirming an action adds it to a queue. The queue runs one task at a time,
-  moves on by itself when a task succeeds, and pauses on a failure for you to
+  advances on its own when a task succeeds, and pauses on a failure for you to
   dismiss or clear. Auto-advance does not pull you back to the pane, and queued
-  items can be removed one at a time from it.
-- When a running task stops at a prompt (sudo password, a pacman or AUR
-  question) and you are not on the action pane, the status bar tells you it is
-  waiting for input and which key opens the pane to answer.
-- A small options menu (press `o`), grouped into categories (Appearance, Search,
-  Manage, Filters, General): hide the keybinding hints, collapse all repos into
-  one `[official]` badge, switch the color palette and skin (see
-  [Theming](#theming)), set the search delay, pick the remove depth, choose the
-  AUR helper (auto, yay, or paru), stack package variants and group a matching
-  Flatpak (two toggles), pick the variant-badge style (count or repeat), float
-  upgradable packages to the top of the Manage list, choose whether the filter
-  box hides when it is not in use,
-  pick how the matched substring is drawn in result and Manage names (off, color,
-  underline, or both), and turn desktop notifications on or off. Settings are
-  saved to `~/.config/plaza/settings.json`.
-- Desktop notifications (via `notify-send`, on by default, toggleable in
-  options): when a background task finishes or stops to wait for input while
-  you are not watching its pane, plaza notifies you so a forgotten install
-  never sits silently at a sudo prompt.
-- Update check (on by default, toggleable in options): at startup plaza asks
-  the GitHub releases API once whether a newer plaza version exists and, if
-  so, shows a note in the sidebar. Turning "Check for plaza updates" off in
-  options stops the network call entirely.
+  items can be removed one at a time.
+- When a running task stops at a prompt (a sudo password, a package-manager
+  question) and you are not on the pane, the status bar tells you it is waiting
+  for input and which key opens the pane to answer.
+
+## Filtering, options, and more
+
+- Filter either list by repository. Press `f` for a checkbox box in the sidebar to
+  show only the sources or repos you pick (one repo, all pacman repos at once, or
+  a whole source like the AUR, apt, dnf, or Flatpak). In Manage the box also holds
+  the reason and sort sections. Search and Manage keep separate filters, so hiding
+  a repo in one view does not affect the other. Press `s` in the box to save the
+  current view's filter as its launch default. By default the box appears only
+  while you are in it or a filter is active; turn off "hide filter box when not in
+  use" to keep it visible.
+- A small options menu (press `o`), grouped into Appearance, Search, Manage,
+  Filters, and General: hide the keybinding hints, collapse all repos into one
+  `[official]` badge, switch palette and skin (see [Theming](#theming)), set the
+  search delay, pick the remove depth, choose the AUR helper (auto, yay, or paru),
+  toggle variant stacking and Flatpak grouping, pick the variant-badge style,
+  float upgradable packages to the top of Manage, choose whether the filter box
+  hides when idle, set how the matched substring is drawn (off, color, underline,
+  or both), and turn notifications on or off. Settings are saved to
+  `~/.config/plaza/settings.json`.
+- Desktop notifications (via `notify-send`, on by default): when a background task
+  finishes or stops for input while you are not watching its pane, Plaza notifies
+  you so a forgotten install never sits silently at a prompt.
+- Update check (on by default): at startup Plaza asks the GitHub releases API once
+  whether a newer version exists and, if so, shows a note in the sidebar. Turning
+  the option off stops the network call entirely.
 
 ## Requirements
 
-On Debian and Ubuntu, apt and dpkg are all Plaza needs; they are part of the
-base system. On Fedora, dnf and rpm are likewise all it needs. The rest of this
-list applies to Arch:
+On Debian and Ubuntu, apt and dpkg are all Plaza needs, and both are part of the
+base system. On Fedora, dnf and rpm are likewise all it needs. The rest applies to
+Arch:
 
 - pacman, for official-repo search, install, and removal
 - an AUR helper (yay or paru), for AUR installs and upgrades. AUR search itself
-  needs no helper; with neither installed you can still browse AUR results.
+  needs no helper; with neither installed you can still browse AUR results
 - checkupdates (from pacman-contrib), for live update counts without root
-- flatpak with a remote configured (optional), to search and install from
-  Flatpak. Installs use `--user`. With no remote, the Flatpak source stays off.
-- Rust and Cargo, to build
+- flatpak with a remote configured (optional), to search and install from Flatpak.
+  Installs use `--user`. With no remote, the Flatpak source stays off
+
+Building from source needs Rust and Cargo.
 
 ## Install
 
@@ -137,8 +135,8 @@ On Debian or Ubuntu, download the `.deb` from the
 sudo apt install ./plaza_*.deb
 ```
 
-On Arch, as a pacman package (tracked by pacman, removable with
-`pacman -R plaza`):
+On Arch, as a pacman package (tracked by pacman, removable with `pacman -R
+plaza`):
 
 ```sh
 makepkg -si
@@ -161,11 +159,11 @@ plaza --search firefox
 
 Plaza has two modes, like a tiling layout you tab around:
 
-- Navigate: arrow keys (or `hjkl`) move the highlighted panel. The highlight is
-  shown with the theme's hover border color (amber in the default theme).
-- Interact: press Enter or Space to focus the highlighted panel. Its border turns
-  the theme's active accent color and the arrow keys now act inside it (move the
-  selection, type in the search box). Press Esc to step back to navigate.
+- **Navigate**: arrow keys (or `hjkl`) move the highlighted panel. The highlight
+  uses the theme's hover border color (amber in the default theme).
+- **Interact**: press Enter or Space to focus the highlighted panel. Its border
+  turns the theme's active accent color and the arrow keys act inside it (move the
+  selection, type in the search box). Press Esc to step back to Navigate.
 
 ## Keys
 
@@ -173,55 +171,53 @@ Plaza has two modes, like a tiling layout you tab around:
 | --- | --- |
 | type | search (or filter, in Manage); the bar is focused at launch |
 | Enter (in search) | run it and focus the results |
-| arrows, hjkl | navigate mode: move the highlight. interact mode: move inside the panel |
+| arrows, hjkl | Navigate: move the highlight. Interact: move inside the panel |
 | Enter, Space | focus the highlighted panel |
 | Esc | step out of the focused panel |
 | Tab | switch between the Search and Manage views |
 | / | jump to the search bar from anywhere |
-| f | open or close the repository filter; Space toggles a checkbox |
+| f | open or close the filter box; Space toggles a checkbox |
 | s (in the filter box) | save the current view's filter (repos, plus reason and sort in Manage) as its launch default |
 | Enter (on a result) | open it, then Enter on a source to install |
 | r (in Manage list) | remove the selected package |
-| Enter (in Manage list) | open the action menu (upgrade/remove/cancel) if the package has a pending update, else remove it |
-| u | jump to the sidebar upgrade block from anywhere (cursor on `total`, so Enter upgrades all) |
-| Enter (on a sidebar upgrade row) | upgrade that source; Enter on the `total` row upgrades all |
+| Enter (in Manage list) | open the action menu (upgrade/remove/cancel) if the package has an update, else remove it |
+| u | jump to the sidebar upgrade block (cursor on `total`, so Enter upgrades all) |
+| Enter (on a sidebar upgrade row) | upgrade that source; Enter on `total` upgrades all |
 | backtick | open or collapse the action pane |
 | j/k, d, x (in the action pane) | move within the queue, remove the selected item, or clear it |
 | Ctrl-C in a focused action | cancel that action |
 | o | options |
 | q | quit; during an action it switches to the action instead |
 
-Search and Manage keep separate search text, so switching views does not lose
-either one.
+Search and Manage keep separate search text, so switching views loses neither.
 
 ## Theming
 
 Plaza's look is split into two independent, swappable parts:
 
 - a **palette**: the colors
-- a **skin**: everything else (border style, corner radius, glyphs/icons, and the
-  highlight and badge styles).
+- a **skin**: everything else (border style, corner radius, glyphs and icons, and
+  the highlight and badge styles)
 
-Switch either one live from the options menu (`o`): the `Palette` and `Skin` rows
+Switch either live from the options menu (`o`): the `Palette` and `Skin` rows
 cycle through the built-ins plus anything you have added, and the choice is saved
 to `~/.config/plaza/settings.json`.
 
 Built-in palettes: `plaza-dusk` (default), `gruvbox`, `nord`, `dracula`,
-`tokyo-night`, `solarized-dark`, `catppuccin-mocha`, and `ansi` (which uses your terminal's own 16
-colors, so it follows whatever theme the terminal is set to). Built-in skins:
+`tokyo-night`, `solarized-dark`, `catppuccin-mocha`, and `ansi` (which uses your
+terminal's own 16 colors, so it follows the terminal's theme). Built-in skins:
 `soft` (default), `sharp`, and `plain` (square borders and no Nerd Font glyphs,
 for terminals without one).
 
 To make your own, drop a `.toml` file in `~/.config/plaza/palettes/` or
-`~/.config/plaza/skins/`. The file name is the theme name. Plaza loads new files
-on the next launch, and edits to the file that is currently active reload live.
-A palette file may set only the colors it wants to change; the rest fall back to
-the default. See [docs/theming.md](docs/theming.md) for the full format and field
-list.
+`~/.config/plaza/skins/`; the file name is the theme name. Plaza loads new files
+on the next launch, and edits to the active file reload live. A palette may set
+only the fields it wants to change; the rest fall back to the default. See
+[docs/theming.md](docs/theming.md) for the full format.
 
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE). Plaza is free software: you can
-redistribute it and/or modify it under the terms of the GNU General Public License
-as published by the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+redistribute it and modify it under the terms of the GNU General Public License as
+published by the Free Software Foundation, either version 3 of the License, or (at
+your option) any later version.

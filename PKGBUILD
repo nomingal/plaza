@@ -1,8 +1,8 @@
 # Maintainer: staszek <staszekborkowski7@gmail.com>
 pkgname=plaza
-pkgver=0.1.0
-pkgrel=2
-pkgdesc="Cross-distro TUI package-manager browser (Arch: pacman + AUR)"
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Cross-distro TUI package-manager browser (pacman, AUR, apt, dnf, Flatpak)"
 arch=('x86_64')
 url="https://github.com/StaszeKrk/plaza"
 license=('GPL-3.0-or-later')
