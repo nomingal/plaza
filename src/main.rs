@@ -728,7 +728,13 @@ async fn dnf_unneeded_text() -> String {
 /// `dnf list --upgrades` stdout, or empty on failure. Parsed by
 /// `parse_dnf_upgrades_count` / `parse_dnf_upgrades_list`.
 async fn dnf_upgrades_text() -> String {
-    match Command::new("dnf").env("LC_ALL", "C").args(["list", "--upgrades"]).output().await {
+    match Command::new("dnf")
+        .env("LC_ALL", "C")
+        .arg(sources::dnf::PRIMARY_ONLY)
+        .args(["list", "--upgrades"])
+        .output()
+        .await
+    {
         Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
         Err(_) => String::new(),
     }
@@ -959,6 +965,7 @@ async fn fetch_detail(
             // second repoquery fills the dependency list.
             let out = Command::new("dnf")
                 .env("LC_ALL", "C")
+                .arg(sources::dnf::PRIMARY_ONLY)
                 .args(["info", name])
                 .output()
                 .await

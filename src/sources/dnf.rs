@@ -4,6 +4,14 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use tokio::process::Command;
 
+/// By default dnf loads filelists, comps, other, and updateinfo metadata on top
+/// of the primary metadata. Search and version lookup need only primary (names,
+/// summaries, versions, repos), so skipping the rest cuts each metadata load by
+/// roughly a third. Passed as a global option before the subcommand. Not used
+/// for `--providers-of=requires` (the detail dependency list), which needs
+/// filelists to resolve file-based requires.
+pub const PRIMARY_ONLY: &str = "--setopt=optional_metadata_types=";
+
 pub struct DnfSource;
 
 impl DnfSource {
@@ -27,14 +35,20 @@ impl Source for DnfSource {
         // `dnf repoquery` fills those in. Each call loads all repo metadata into
         // libsolv (seconds of CPU), so instead of searching and then querying
         // the matched names in series, both run concurrently: the repoquery uses
-        // a `*query*` name glob independent of the search output. This roughly
-        // halves latency. A summary-only match falls outside the glob and is
-        // kept without a version (see `build_hits`).
+        // a `*query*` name glob independent of the search output. Both load only
+        // primary metadata (`PRIMARY_ONLY`). Together this roughly halves search
+        // latency. A summary-only match falls outside the glob and is kept
+        // without a version (see `build_hits`).
         let glob = format!("*{query}*");
-        let search_fut =
-            Command::new("dnf").env("LC_ALL", "C").arg("search").arg(query).output();
+        let search_fut = Command::new("dnf")
+            .env("LC_ALL", "C")
+            .arg(PRIMARY_ONLY)
+            .arg("search")
+            .arg(query)
+            .output();
         let repoquery_fut = Command::new("dnf")
             .env("LC_ALL", "C")
+            .arg(PRIMARY_ONLY)
             .args(["repoquery", "--qf", "%{name}\t%{evr}\t%{repoid}\n", "--latest-limit=1"])
             .arg(&glob)
             .output();
