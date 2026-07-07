@@ -102,6 +102,11 @@ async fn run_tui() -> anyhow::Result<()> {
 
     spawn_input_task(tx.clone());
     spawn_stats_tasks(tx.clone(), app.aur_helper_bin.clone(), app.present_sources().contains(&SourceId::Flatpak));
+    // Preload any source that keeps an in-memory index (dnf builds its catalog so
+    // searches are instant); a no-op for the others.
+    for s in &sources {
+        s.warm();
+    }
     spawn_theme_tick(tx.clone());
     if app.settings.check_updates {
         spawn_self_update_check(tx.clone());
@@ -294,6 +299,19 @@ fn handle_event(
                 }
                 // Refresh stats + installed index after each action completes.
                 spawn_stats_tasks(tx.clone(), app.aur_helper_bin.clone(), app.present_sources().contains(&SourceId::Flatpak));
+                // A successful dnf install/upgrade refreshes repo metadata, so
+                // rebuild the dnf catalog to pick up new versions.
+                if success {
+                    if let Some(task) = &app.task {
+                        if task.spec.source_id == SourceId::Dnf
+                            && matches!(task.spec.action, Action::Install | Action::Upgrade)
+                        {
+                            if let Some(dnf) = sources.iter().find(|s| s.id() == SourceId::Dnf) {
+                                dnf.warm();
+                            }
+                        }
+                    }
+                }
                 if success && !app.queue.is_empty() {
                     // Auto-advance: drop the finished task and start the next item.
                     // Do not surface; keep the user wherever they currently are.

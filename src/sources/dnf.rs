@@ -2,6 +2,8 @@ use crate::model::{Action, CommandLine, PackageDetail, PackageHit, SourceId, Sou
 use crate::sources::Source;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use tokio::process::Command;
 
 /// By default dnf loads filelists, comps, other, and updateinfo metadata on top
@@ -12,12 +14,48 @@ use tokio::process::Command;
 /// filelists to resolve file-based requires.
 pub const PRIMARY_ONLY: &str = "--setopt=optional_metadata_types=";
 
-pub struct DnfSource;
+/// The full repo catalog, loaded once in the background so searches can filter
+/// it in memory instead of shelling out to dnf (a multi-second pool rebuild) per
+/// query. `None` until the first successful load; searches fall back to the live
+/// `dnf search` path while it is `None`.
+pub struct DnfSource {
+    catalog: Arc<RwLock<Option<Arc<Vec<PackageHit>>>>>,
+    loading: Arc<AtomicBool>,
+}
 
 impl DnfSource {
     pub fn new() -> Self {
-        DnfSource
+        DnfSource { catalog: Arc::new(RwLock::new(None)), loading: Arc::new(AtomicBool::new(false)) }
     }
+}
+
+impl Default for DnfSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Dump the whole repo catalog (one latest row per package: name, evr, repoid,
+/// summary) with primary metadata only. `None` on spawn failure, non-zero exit,
+/// or an empty result, so a failed load never replaces a good catalog with junk.
+async fn dump_catalog() -> Option<Vec<PackageHit>> {
+    let out = Command::new("dnf")
+        .env("LC_ALL", "C")
+        .arg(PRIMARY_ONLY)
+        .args([
+            "repoquery",
+            "--qf",
+            "%{name}\t%{evr}\t%{repoid}\t%{summary}\n",
+            "--latest-limit=1",
+        ])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let hits = parse_catalog(&String::from_utf8_lossy(&out.stdout));
+    (!hits.is_empty()).then_some(hits)
 }
 
 #[async_trait]
@@ -30,7 +68,33 @@ impl Source for DnfSource {
         "dnf"
     }
 
+    fn warm(&self) {
+        // (Re)load the full catalog in the background. Called once at startup and
+        // again after an in-plaza upgrade. `loading` guards against overlapping
+        // loads; a refresh keeps serving the old catalog until the new one lands.
+        if self.loading.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let catalog = Arc::clone(&self.catalog);
+        let loading = Arc::clone(&self.loading);
+        tokio::spawn(async move {
+            if let Some(hits) = dump_catalog().await {
+                *catalog.write().unwrap() = Some(Arc::new(hits));
+            }
+            loading.store(false, Ordering::SeqCst);
+        });
+    }
+
     async fn search(&self, query: &str) -> anyhow::Result<Vec<PackageHit>> {
+        // Fast path: once the background catalog is loaded, filter it in memory
+        // instead of shelling out. Clone the Arc so the lock is released before
+        // filtering.
+        let ready = self.catalog.read().unwrap().clone();
+        if let Some(catalog) = ready {
+            return Ok(filter_catalog(&catalog, query));
+        }
+        // Live fallback until the catalog is ready (and for headless `--search`,
+        // which never warms).
         // `dnf search` matches name + summary but gives no version or repo; a
         // `dnf repoquery` fills those in. Each call loads all repo metadata into
         // libsolv (seconds of CPU), so instead of searching and then querying
@@ -138,6 +202,49 @@ pub fn build_hits(search: &str, repoquery: &str) -> Vec<PackageHit> {
                 meta: SourceMeta { repo, maintained: true, ..Default::default() },
             }
         })
+        .collect()
+}
+
+/// Parse the full-catalog dump (`dnf repoquery --qf
+/// '%{name}\t%{evr}\t%{repoid}\t%{summary}\n'`) into dnf PackageHits. Each line
+/// is four tab fields; lines without all four (or with an empty name) are
+/// skipped. `%{name}` carries no `.arch` suffix, so none is stripped.
+pub fn parse_catalog(output: &str) -> Vec<PackageHit> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(4, '\t');
+            let (name, evr, repo, summary) =
+                (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+            let name = name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(PackageHit {
+                name: name.to_string(),
+                version: evr.trim().to_string(),
+                source_id: SourceId::Dnf,
+                description: summary.trim().to_string(),
+                meta: SourceMeta {
+                    repo: Some(repo.trim().to_string()),
+                    maintained: true,
+                    ..Default::default()
+                },
+            })
+        })
+        .collect()
+}
+
+/// Keep catalog hits whose name or summary contains `query`, case-insensitive.
+/// Mirrors how `dnf search` matches against name and summary.
+pub fn filter_catalog(catalog: &[PackageHit], query: &str) -> Vec<PackageHit> {
+    let q = query.to_lowercase();
+    catalog
+        .iter()
+        .filter(|h| {
+            h.name.to_lowercase().contains(&q) || h.description.to_lowercase().contains(&q)
+        })
+        .cloned()
         .collect()
 }
 
@@ -266,6 +373,52 @@ protobuf-vim.noarch : Vim syntax highlighting
         assert_eq!(orphan.version, "");
         assert_eq!(orphan.meta.repo, None);
         assert!(orphan.meta.maintained);
+    }
+
+    #[test]
+    fn parses_catalog_rows_and_skips_malformed() {
+        let out = "\
+ripgrep\t14.1.1-3.fc43\tfedora\tLine-oriented search tool
+vim-enhanced\t2:9.1.100-1.fc43\tupdates\tThe VIM editor
+empty-summary\t1-1.fc43\tfedora\t
+bad line without tabs
+\t1-1\tfedora\tblank name is skipped
+";
+        let hits = parse_catalog(out);
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[0].name, "ripgrep");
+        assert_eq!(hits[0].version, "14.1.1-3.fc43");
+        assert_eq!(hits[0].source_id, SourceId::Dnf);
+        assert_eq!(hits[0].description, "Line-oriented search tool");
+        assert_eq!(hits[0].meta.repo.as_deref(), Some("fedora"));
+        assert!(hits[0].meta.maintained);
+        assert_eq!(hits[1].name, "vim-enhanced");
+        assert_eq!(hits[1].meta.repo.as_deref(), Some("updates"));
+        assert_eq!(hits[2].name, "empty-summary");
+        assert_eq!(hits[2].description, "");
+        assert!(parse_catalog("").is_empty());
+    }
+
+    #[test]
+    fn filters_catalog_by_name_or_summary_case_insensitive() {
+        let catalog = parse_catalog(
+            "ripgrep\t14\tfedora\tLine-oriented search tool\n\
+             the-silver-searcher\t2\tfedora\tA code searching tool like ack\n\
+             foo\t1\tfedora\tbar\n",
+        );
+        // name match, case-insensitive
+        let hits = filter_catalog(&catalog, "RIPGREP");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "ripgrep");
+        // summary-only match
+        let hits = filter_catalog(&catalog, "ack");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "the-silver-searcher");
+        // name OR summary: "search" is in ripgrep's summary and silver-searcher's name
+        let hits = filter_catalog(&catalog, "search");
+        let names: Vec<String> = hits.iter().map(|h| h.name.clone()).collect();
+        assert_eq!(names, vec!["ripgrep", "the-silver-searcher"]);
+        assert!(filter_catalog(&catalog, "zzz").is_empty());
     }
 
     #[test]

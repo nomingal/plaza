@@ -15,6 +15,12 @@ pub trait Source: Send + Sync {
     fn display_name(&self) -> &'static str;
     async fn search(&self, query: &str) -> anyhow::Result<Vec<PackageHit>>;
     fn action_command(&self, action: Action, pkg: &str) -> CommandLine;
+
+    /// Optional hook to preload/refresh source state in the background. Called
+    /// once at startup and again after an install/upgrade completes. Default is a
+    /// no-op; dnf overrides it to build its in-memory catalog. Must be cheap to
+    /// call (spawns its own task) and safe to call repeatedly.
+    fn warm(&self) {}
 }
 
 /// Return true if `bin` is an executable found on `$PATH`.
