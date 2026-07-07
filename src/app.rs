@@ -1303,7 +1303,7 @@ impl App {
             .filter(|row| {
                 row.providers
                     .iter()
-                    .any(|p| !self.search_filter.off.contains(p.badge()))
+                    .any(|p| !self.search_filter.off.contains(p.filter_key()))
             })
             .collect()
     }
@@ -2401,6 +2401,26 @@ mod tests {
         app.search_filter.off.insert("aur".into());
         let names: Vec<&str> = app.search_rows().iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["a"]); // now c's providers are all off
+    }
+
+    #[test]
+    fn search_rows_filters_dnf_by_source_not_repo() {
+        // A dnf provider's display badge is its repo id ("updates"), but the
+        // filter box toggles the source-level "dnf". Filtering must key on the
+        // source, not the repo badge, or the dnf checkbox does nothing.
+        let mut app = App::with_settings(vec![SourceId::Dnf], Settings::default());
+        let dnf_prov = Provider {
+            source_id: SourceId::Dnf,
+            version: "1".into(),
+            installed: false,
+            installed_version: None,
+            target: "pkg".into(),
+            meta: SourceMeta { repo: Some("updates".into()), ..Default::default() },
+        };
+        app.rows = vec![row_with("rg", vec![dnf_prov])];
+        assert_eq!(app.search_rows().len(), 1);
+        app.search_filter.off.insert("dnf".into());
+        assert!(app.search_rows().is_empty());
     }
 
     #[test]

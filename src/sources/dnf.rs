@@ -24,22 +24,23 @@ impl Source for DnfSource {
 
     async fn search(&self, query: &str) -> anyhow::Result<Vec<PackageHit>> {
         // `dnf search` matches name + summary but gives no version or repo; a
-        // batched `dnf repoquery` over the matched names fills those in.
-        let search_out =
-            Command::new("dnf").env("LC_ALL", "C").arg("search").arg(query).output().await?;
-        let search = String::from_utf8_lossy(&search_out.stdout).into_owned();
-        let names: Vec<String> =
-            parse_search_output(&search).into_iter().map(|(n, _)| n).collect();
-        if names.is_empty() {
-            return Ok(Vec::new());
-        }
-        let repoquery_out = Command::new("dnf")
+        // `dnf repoquery` fills those in. Each call loads all repo metadata into
+        // libsolv (seconds of CPU), so instead of searching and then querying
+        // the matched names in series, both run concurrently: the repoquery uses
+        // a `*query*` name glob independent of the search output. This roughly
+        // halves latency. A summary-only match falls outside the glob and is
+        // kept without a version (see `build_hits`).
+        let glob = format!("*{query}*");
+        let search_fut =
+            Command::new("dnf").env("LC_ALL", "C").arg("search").arg(query).output();
+        let repoquery_fut = Command::new("dnf")
             .env("LC_ALL", "C")
             .args(["repoquery", "--qf", "%{name}\t%{evr}\t%{repoid}\n", "--latest-limit=1"])
-            .args(&names)
-            .output()
-            .await?;
-        let repoquery = String::from_utf8_lossy(&repoquery_out.stdout);
+            .arg(&glob)
+            .output();
+        let (search_out, repoquery_out) = tokio::join!(search_fut, repoquery_fut);
+        let search = String::from_utf8_lossy(&search_out?.stdout).into_owned();
+        let repoquery = String::from_utf8_lossy(&repoquery_out?.stdout).into_owned();
         Ok(build_hits(&search, &repoquery))
     }
 
@@ -102,20 +103,26 @@ pub fn parse_repoquery(output: &str) -> HashMap<String, (String, String)> {
 }
 
 /// Join the `dnf search` match set with repoquery versions/repos into dnf
-/// PackageHits. A searched name with no repoquery candidate is dropped.
+/// PackageHits. The repoquery runs as a name glob in parallel with the search,
+/// so a hit matched only by its summary has no candidate; it is kept with an
+/// empty version and no repo (the detail view fills that in on selection), not
+/// dropped.
 pub fn build_hits(search: &str, repoquery: &str) -> Vec<PackageHit> {
     let rq = parse_repoquery(repoquery);
     parse_search_output(search)
         .into_iter()
-        .filter_map(|(name, description)| {
-            let (version, repo) = rq.get(&name)?.clone();
-            Some(PackageHit {
+        .map(|(name, description)| {
+            let (version, repo) = match rq.get(&name) {
+                Some((v, r)) => (v.clone(), Some(r.clone())),
+                None => (String::new(), None),
+            };
+            PackageHit {
                 name,
                 version,
                 source_id: SourceId::Dnf,
                 description,
-                meta: SourceMeta { repo: Some(repo), maintained: true, ..Default::default() },
-            })
+                meta: SourceMeta { repo, maintained: true, ..Default::default() },
+            }
         })
         .collect()
 }
@@ -223,18 +230,28 @@ protobuf-vim.noarch : Vim syntax highlighting
     }
 
     #[test]
-    fn build_hits_joins_and_drops_unmatched() {
+    fn build_hits_joins_and_keeps_unmatched() {
+        // The version/repo repoquery runs as a name glob in parallel with the
+        // search, so a summary-only match has no repoquery candidate. Such a hit
+        // is kept (it is a real package dnf returned) with an empty version and
+        // no repo badge, not dropped; the detail view fills its version in on
+        // selection.
         let search = "vim-enhanced.x86_64\tEnhanced vi\norphan.noarch\tnot in repoquery\n";
         let repoquery = "vim-enhanced\t2:9.1.158-1.fc41\tupdates\n";
         let hits = build_hits(search, repoquery);
-        assert_eq!(hits.len(), 1); // orphan without a repoquery candidate is dropped
-        let h = &hits[0];
-        assert_eq!(h.name, "vim-enhanced");
-        assert_eq!(h.version, "2:9.1.158-1.fc41");
-        assert_eq!(h.source_id, SourceId::Dnf);
-        assert_eq!(h.description, "Enhanced vi");
-        assert_eq!(h.meta.repo.as_deref(), Some("updates"));
-        assert!(h.meta.maintained);
+        assert_eq!(hits.len(), 2);
+        let vim = &hits[0];
+        assert_eq!(vim.name, "vim-enhanced");
+        assert_eq!(vim.version, "2:9.1.158-1.fc41");
+        assert_eq!(vim.source_id, SourceId::Dnf);
+        assert_eq!(vim.description, "Enhanced vi");
+        assert_eq!(vim.meta.repo.as_deref(), Some("updates"));
+        assert!(vim.meta.maintained);
+        let orphan = &hits[1];
+        assert_eq!(orphan.name, "orphan");
+        assert_eq!(orphan.version, "");
+        assert_eq!(orphan.meta.repo, None);
+        assert!(orphan.meta.maintained);
     }
 
     #[test]

@@ -89,6 +89,19 @@ impl Provider {
         }
     }
 
+    /// The identifier this provider is filtered by in the search filter box.
+    /// Pacman filters per repo, so its key is the repo name (matching the
+    /// per-repo checkboxes); every other source has a single source-level
+    /// checkbox, so the key is the source badge ("aur", "flatpak", "apt",
+    /// "dnf"). This deliberately differs from `badge()`, which shows the repo
+    /// id for apt/dnf rows.
+    pub fn filter_key(&self) -> &str {
+        match self.source_id {
+            SourceId::Pacman => self.meta.repo.as_deref().unwrap_or("repo"),
+            other => other.badge(),
+        }
+    }
+
     /// Cache key for this provider's fetched detail. Mirrors the install target:
     /// `repo/target` for pacman, `aur:target` for the AUR, `flatpak:app-id` for
     /// Flatpak. Keys on `self.target`, so a variant in a grouped row stays
