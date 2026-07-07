@@ -135,7 +135,20 @@ On Debian or Ubuntu, download the `.deb` from the
 sudo apt install ./plaza_*.deb
 ```
 
-On Arch, as a pacman package (tracked by pacman, removable with `pacman -R
+On Fedora, download the `.rpm` from the
+[latest release](https://github.com/StaszeKrk/plaza/releases/latest) and:
+
+```sh
+sudo dnf install ./plaza-*.rpm
+```
+
+On Arch, from the AUR with your preferred helper:
+
+```sh
+yay -S plaza
+```
+
+Or build the bundled PKGBUILD (tracked by pacman, removable with `pacman -R
 plaza`):
 
 ```sh

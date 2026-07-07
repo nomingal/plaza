@@ -57,3 +57,47 @@ jobs:
           # runner-owned workspace inside the container
           GH_REPO: ${{ github.repository }}
         run: gh release upload "$TAG" target/debian/*.deb --clobber
+
+  rpm:
+    # fedora:41 keeps the binary installable on the still-supported Fedora
+    # releases; a newer container would raise the glibc floor.
+    runs-on: ubuntu-latest
+    container: fedora:41
+    env:
+      TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+    steps:
+      - name: Install build dependencies
+        # rpm-build provides find-requires, which cargo-generate-rpm's auto-req
+        # uses to resolve the glibc/gcc-libs dependencies.
+        run: dnf install -y gcc git gh rpm-build
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal
+
+      - name: Build .rpm
+        run: |
+          . "$HOME/.cargo/env"
+          cargo install cargo-generate-rpm --locked
+          cargo build --release
+          cargo generate-rpm
+
+      - name: Check package version matches the tag
+        run: |
+          rpm=$(ls target/generate-rpm/*.rpm)
+          ver=$(rpm -qp --queryformat '%{VERSION}' "$rpm")
+          case "$ver" in
+            "${TAG#v}") echo "$rpm version $ver matches $TAG" ;;
+            *) echo "package version $ver does not match tag $TAG"; exit 1 ;;
+          esac
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$TAG" target/generate-rpm/*.rpm --clobber

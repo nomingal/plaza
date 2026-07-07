@@ -20,6 +20,15 @@ assets = [
     ["README.md", "usr/share/doc/plaza/README.md", "644"],
 ]
 
+[package.metadata.generate-rpm]
+# name, version, license, and summary are taken from [package] above. auto-req
+# (default) resolves the glibc/gcc-libs dependencies on the Fedora build host.
+assets = [
+    { source = "target/release/plaza", dest = "/usr/bin/plaza", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/plaza/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/plaza/LICENSE", mode = "644" },
+]
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
