@@ -3,3 +3,7 @@
 # makepkg build artifacts
 /pkg
 *.pkg.tar.zst
+
+# VHS demo recipe: kept local because it contains a real sudo password for the
+# neofetch install/remove scenes. Only the rendered demo.gif is committed.
+/demo.tape
