@@ -228,6 +228,16 @@ on the next launch, and edits to the active file reload live. A palette may set
 only the fields it wants to change; the rest fall back to the default. See
 [docs/theming.md](docs/theming.md) for the full format.
 
+## Troubleshooting
+
+If input stalls after the first keypress, your terminal may be advertising kitty
+keyboard-protocol support that it does not deliver correctly. Set `PLAZA_NO_KITTY`
+in the environment to run Plaza in plain-key mode:
+
+```
+PLAZA_NO_KITTY=1 plaza
+```
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE). Plaza is free software: you can

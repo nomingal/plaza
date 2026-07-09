@@ -79,7 +79,13 @@ async fn run_tui() -> anyhow::Result<()> {
     // Ask the terminal (kitty keyboard protocol, e.g. ghostty) to report key
     // event types so held-key auto-repeat (Repeat) is distinguishable from a
     // real Press. Queried before the input task starts reading stdin.
-    let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    // Setting PLAZA_NO_KITTY forces this off: some terminals (notably headless
+    // recording terminals like the one VHS uses) claim support, then deliver
+    // enhanced key events badly and stall input after the first key. With the
+    // flags off Plaza runs in plain mode and leans on the search debounce.
+    let disable_kitty = std::env::var_os("PLAZA_NO_KITTY").is_some();
+    let enhanced =
+        !disable_kitty && crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
     if enhanced {
         let _ = execute!(
             stdout,
