@@ -459,6 +459,42 @@ impl HighlightMode {
     }
 }
 
+/// Visibility of the CACHE sidebar block. `Hidden` still opens on the `c`
+/// hotkey; this is only the idle state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CacheBlockMode {
+    #[default]
+    Hidden,
+    Concise,
+    Full,
+}
+
+impl CacheBlockMode {
+    pub fn next(self) -> CacheBlockMode {
+        match self {
+            CacheBlockMode::Hidden => CacheBlockMode::Concise,
+            CacheBlockMode::Concise => CacheBlockMode::Full,
+            CacheBlockMode::Full => CacheBlockMode::Hidden,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            CacheBlockMode::Hidden => "hidden",
+            CacheBlockMode::Concise => "concise",
+            CacheBlockMode::Full => "full",
+        }
+    }
+}
+
+/// Cycle the "keep N cached versions" option (0 = clean everything).
+pub fn next_cache_keep(cur: u32) -> u32 {
+    if cur >= 3 {
+        0
+    } else {
+        cur + 1
+    }
+}
+
 /// Command that removes `name` at the given depth. Removal goes through pacman
 /// for both native and foreign (AUR) packages; a foreign package is still
 /// tracked in the local db.
@@ -1272,6 +1308,23 @@ mod tests {
         };
         assert!(row.any_installed());
         assert!(row.has_source(SourceId::Aur));
+    }
+
+    #[test]
+    fn cache_block_mode_cycles_and_labels() {
+        assert_eq!(CacheBlockMode::default(), CacheBlockMode::Hidden);
+        assert_eq!(CacheBlockMode::Hidden.next(), CacheBlockMode::Concise);
+        assert_eq!(CacheBlockMode::Concise.next(), CacheBlockMode::Full);
+        assert_eq!(CacheBlockMode::Full.next(), CacheBlockMode::Hidden);
+        assert_eq!(CacheBlockMode::Concise.label(), "concise");
+    }
+
+    #[test]
+    fn cache_keep_cycles_0_to_3() {
+        assert_eq!(next_cache_keep(0), 1);
+        assert_eq!(next_cache_keep(2), 3);
+        assert_eq!(next_cache_keep(3), 0);
+        assert_eq!(next_cache_keep(7), 0); // out-of-range wraps
     }
 
     #[test]

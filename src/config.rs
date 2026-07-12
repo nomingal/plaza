@@ -1,5 +1,6 @@
 use crate::model::{
-    AurHelper, HighlightMode, ReasonFilter, RemoveDepth, SortDir, SortKey, SourceId, VariantBadge,
+    AurHelper, CacheBlockMode, HighlightMode, ReasonFilter, RemoveDepth, SortDir, SortKey,
+    SourceId, VariantBadge,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -65,6 +66,14 @@ pub struct Settings {
     /// Query the GitHub releases API once at startup and show a sidebar note
     /// when a newer plaza release exists.
     pub check_updates: bool,
+    /// Queue an automatic cache clean after a successful install or upgrade.
+    pub auto_clean: bool,
+    /// Cached package versions to keep when cleaning (0 = delete everything).
+    /// pacman honors it exactly (paccache -rk<N>); apt maps 0 to `clean` and
+    /// anything else to `autoclean`.
+    pub cache_keep: u32,
+    /// Idle visibility of the CACHE sidebar block (`c` opens it regardless).
+    pub cache_block: CacheBlockMode,
 }
 
 impl Default for Settings {
@@ -92,6 +101,9 @@ impl Default for Settings {
             default_manage_float_updates: true,
             notifications: true,
             check_updates: true,
+            auto_clean: false,
+            cache_keep: 2,
+            cache_block: CacheBlockMode::Hidden,
         }
     }
 }
@@ -369,5 +381,13 @@ mod tests {
         let back: Settings = serde_json::from_str(&j).unwrap();
         assert_eq!(back.palette, "nord");
         assert_eq!(back.skin, "sharp");
+    }
+
+    #[test]
+    fn cache_cleanup_defaults() {
+        let s = Settings::default();
+        assert!(!s.auto_clean);
+        assert_eq!(s.cache_keep, 2);
+        assert_eq!(s.cache_block, crate::model::CacheBlockMode::Hidden);
     }
 }
