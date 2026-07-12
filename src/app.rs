@@ -3,7 +3,7 @@ use crate::config::Settings;
 use crate::model::{
     chain_commands, remove_command, remove_command_apt, remove_command_dnf, remove_command_flatpak,
     source_upgrade_command,
-    upgrade_one_command, Action, ActionSpec, InstalledStats, PackageDetail, PackageHit, PackageRow,
+    upgrade_one_command, Action, ActionSpec, CacheSizes, InstalledStats, PackageDetail, PackageHit, PackageRow,
     Provider, SortDir, SortKey, SourceId, UpdatesInfo,
 };
 use std::cell::Cell;
@@ -284,6 +284,7 @@ pub struct App {
     pub installed: InstalledIndex,
     pub stats: InstalledStats,
     pub updates: UpdatesInfo,
+    pub cache_sizes: CacheSizes,
     pub source_status: Vec<(SourceId, SourceState)>,
     pub focus: Focus,
     pub active_view: ActiveView,
@@ -430,6 +431,7 @@ impl App {
             installed: InstalledIndex::default(),
             stats: InstalledStats::default(),
             updates: UpdatesInfo::default(),
+            cache_sizes: CacheSizes::default(),
             source_status,
             focus: Focus::Search,
             active_view: ActiveView::Search,

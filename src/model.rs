@@ -807,6 +807,30 @@ pub struct ActionSpec {
     pub command: CommandLine,
 }
 
+/// Per-source cache sizes for the CACHE sidebar block, filled in by a
+/// background scan. `None` = unknown (source absent, dir unreadable, probe
+/// failed); the UI shows a dash.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheSizes {
+    pub pacman: Option<u64>,
+    pub aur: Option<u64>,
+    pub apt: Option<u64>,
+    pub dnf: Option<u64>,
+    /// Count of unused flatpak runtimes (a count, not bytes).
+    pub flatpak_unused: Option<usize>,
+}
+
+impl CacheSizes {
+    /// Sum of the known byte sizes; `None` until at least one is known.
+    pub fn total_bytes(&self) -> Option<u64> {
+        let parts = [self.pacman, self.aur, self.apt, self.dnf];
+        if parts.iter().all(Option::is_none) {
+            return None;
+        }
+        Some(parts.iter().flatten().sum())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InstalledStats {
     pub repo: usize,
@@ -866,6 +890,16 @@ pub fn human_bytes(b: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_sizes_total_sums_known_bytes() {
+        let mut s = CacheSizes::default();
+        assert_eq!(s.total_bytes(), None);
+        s.pacman = Some(1000);
+        s.aur = Some(500);
+        s.flatpak_unused = Some(3); // a count, never part of the byte total
+        assert_eq!(s.total_bytes(), Some(1500));
+    }
 
     #[test]
     fn reason_filter_cycles_all_explicit_orphans() {

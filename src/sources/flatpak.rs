@@ -218,9 +218,36 @@ pub fn parse_updates(out: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parse the listing `flatpak uninstall --unused` prints before its proceed
+/// prompt (the probe runs it with stdin closed so it aborts unanswered).
+/// Counts the numbered rows; "Nothing unused" is a clean zero. `None` when
+/// the output matches neither shape (error, unexpected format).
+pub fn parse_unused_output(out: &str) -> Option<usize> {
+    if out.contains("Nothing unused") {
+        return Some(0);
+    }
+    let count = out
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            t.split_once('.')
+                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        })
+        .count();
+    (count > 0).then_some(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_unused_uninstall_listing() {
+        let out = "\n\n        ID                             Branch\n 1. [-] org.freedesktop.Platform      22.08\n 2. [-] org.freedesktop.Platform.GL   22.08\n\nProceed with these changes to the user installation? [Y/n]: ";
+        assert_eq!(parse_unused_output(out), Some(2));
+        assert_eq!(parse_unused_output("Nothing unused to uninstall\n"), Some(0));
+        assert_eq!(parse_unused_output("error: something went wrong"), None);
+    }
 
     #[test]
     fn parses_human_size() {

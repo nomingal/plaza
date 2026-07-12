@@ -1,4 +1,4 @@
-use crate::model::{InstalledStats, PackageDetail, PackageHit, SourceId, UpdatesInfo};
+use crate::model::{CacheSizes, InstalledStats, PackageDetail, PackageHit, SourceId, UpdatesInfo};
 use crate::sources::installed::{InstalledIndex, InstalledPkg, PkgDetail};
 use crate::sources::updates::UpdateEntry;
 
@@ -17,6 +17,8 @@ pub enum AppEvent {
     },
     Stats(InstalledStats),
     Updates(UpdatesInfo),
+    /// Per-source cache sizes from the background scan (CACHE sidebar block).
+    CacheSizes(CacheSizes),
     Installed(InstalledIndex),
     /// Installed package list for the Manage view, plus the distinct repo names
     /// (priority order) from `pacman -Sl` that drive the repo filter.
