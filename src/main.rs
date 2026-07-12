@@ -108,6 +108,7 @@ async fn run_tui() -> anyhow::Result<()> {
 
     spawn_input_task(tx.clone());
     spawn_stats_tasks(tx.clone(), app.aur_helper_bin.clone(), app.present_sources().contains(&SourceId::Flatpak));
+    spawn_cache_scan(tx.clone(), app.present_sources(), app.aur_helper_bin.clone());
     // Preload any source that keeps an in-memory index (dnf builds its catalog so
     // searches are instant); a no-op for the others.
     for s in &sources {
@@ -305,6 +306,7 @@ fn handle_event(
                 }
                 // Refresh stats + installed index after each action completes.
                 spawn_stats_tasks(tx.clone(), app.aur_helper_bin.clone(), app.present_sources().contains(&SourceId::Flatpak));
+                spawn_cache_scan(tx.clone(), app.present_sources(), app.aur_helper_bin.clone());
                 // A successful dnf install/upgrade refreshes repo metadata, so
                 // rebuild the dnf catalog to pick up new versions.
                 if success {
@@ -329,6 +331,9 @@ fn handle_event(
                 }
                 // success + empty queue: leave the finished task on screen as today.
             }
+        }
+        AppEvent::CacheSizes(sizes) => {
+            app.cache_sizes = sizes;
         }
         _ => {}
     }
@@ -422,6 +427,59 @@ fn start_next(app: &mut App, tx: &UnboundedSender<AppEvent>, surface: bool) {
             app.status_msg = Some(format!("failed to start action: {e}"));
         }
     }
+}
+
+/// Scan cache sizes in the background and send one `CacheSizes` event.
+/// Byte sums are `None` for absent sources or unreadable dirs; the flatpak
+/// probe runs `flatpak uninstall --unused` with stdin closed (it prints the
+/// list, then aborts at the proceed prompt without stdin) and parses the count.
+fn spawn_cache_scan(tx: UnboundedSender<AppEvent>, present: Vec<SourceId>, aur_bin: Option<String>) {
+    tokio::spawn(async move {
+        let scan_present = present.clone();
+        let mut sizes = tokio::task::spawn_blocking(move || {
+            use crate::sources::{aur_cache_dir, dir_size};
+            use std::path::Path;
+            let mut s = model::CacheSizes::default();
+            if scan_present.contains(&SourceId::Pacman) {
+                s.pacman = dir_size(Path::new("/var/cache/pacman/pkg"), None);
+            }
+            if scan_present.contains(&SourceId::Aur) {
+                s.aur = aur_bin
+                    .as_deref()
+                    .and_then(aur_cache_dir)
+                    .and_then(|d| dir_size(&d, None));
+            }
+            if scan_present.contains(&SourceId::Apt) {
+                s.apt = dir_size(Path::new("/var/cache/apt/archives"), Some("deb"));
+            }
+            if scan_present.contains(&SourceId::Dnf) {
+                // dnf5 and dnf4 cache roots; count only cleanable packages,
+                // not metadata (which `dnf clean packages` leaves alone).
+                s.dnf = dir_size(Path::new("/var/cache/libdnf5"), Some("rpm"))
+                    .or_else(|| dir_size(Path::new("/var/cache/dnf"), Some("rpm")));
+            }
+            s
+        })
+        .await
+        .unwrap_or_default();
+        if present.contains(&SourceId::Flatpak) {
+            let out = Command::new("flatpak")
+                .args(["uninstall", "--unused", "--user"])
+                .env("LC_ALL", "C")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .await;
+            if let Ok(out) = out {
+                let text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                sizes.flatpak_unused = crate::sources::flatpak::parse_unused_output(&text);
+            }
+        }
+        let _ = tx.send(AppEvent::CacheSizes(sizes));
+    });
 }
 
 fn spawn_stats_tasks(tx: UnboundedSender<AppEvent>, aur_helper: Option<String>, flatpak: bool) {

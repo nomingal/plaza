@@ -23,6 +23,35 @@ pub trait Source: Send + Sync {
     fn warm(&self) {}
 }
 
+/// Recursive size of everything under `path`, optionally only files with
+/// extension `ext`. `None` when the root is missing or unreadable (the UI
+/// shows a dash); unreadable entries below the root are skipped, not fatal.
+pub fn dir_size(path: &std::path::Path, ext: Option<&str>) -> Option<u64> {
+    let entries = std::fs::read_dir(path).ok()?;
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            total += dir_size(&p, ext).unwrap_or(0);
+        } else if ext.is_none_or(|e| p.extension().and_then(|x| x.to_str()) == Some(e)) {
+            total += meta.len();
+        }
+    }
+    Some(total)
+}
+
+/// The AUR helper's build-cache directory (`~/.cache/yay`, paru's clone dir).
+pub fn aur_cache_dir(aur_bin: &str) -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let cache = std::path::PathBuf::from(home).join(".cache");
+    match aur_bin {
+        "yay" => Some(cache.join("yay")),
+        "paru" => Some(cache.join("paru").join("clone")),
+        _ => None,
+    }
+}
+
 /// Return true if `bin` is an executable found on `$PATH`.
 pub fn which(bin: &str) -> bool {
     let Ok(path) = std::env::var("PATH") else {
@@ -149,5 +178,26 @@ mod tests {
         let hits = src.search("anything").await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(src.id(), SourceId::Aur);
+    }
+
+    #[test]
+    fn dir_size_sums_recursively_and_filters_ext() {
+        let root = std::env::temp_dir().join(format!("plaza-dirsize-{}", std::process::id()));
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("a.pkg"), vec![0u8; 100]).unwrap();
+        std::fs::write(sub.join("b.rpm"), vec![0u8; 50]).unwrap();
+        assert_eq!(dir_size(&root, None), Some(150));
+        assert_eq!(dir_size(&root, Some("rpm")), Some(50));
+        assert_eq!(dir_size(std::path::Path::new("/definitely/not/here"), None), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn aur_cache_dir_maps_helper_to_path() {
+        std::env::var("HOME").expect("HOME set in tests");
+        assert!(aur_cache_dir("yay").unwrap().ends_with(".cache/yay"));
+        assert!(aur_cache_dir("paru").unwrap().ends_with(".cache/paru/clone"));
+        assert!(aur_cache_dir("").is_none());
     }
 }
