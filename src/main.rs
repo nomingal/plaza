@@ -1190,6 +1190,7 @@ fn handle_interact_key(app: &mut App, key: KeyEvent, tx: &UnboundedSender<AppEve
         Focus::Main => interact_main(app, key, tx),
         Focus::List => interact_list(app, key),
         Focus::Filter => interact_filter(app, key),
+        Focus::Cache => {} // real handler arrives in a later task
         Focus::TaskPane => {} // the task pane owns input via handle_task_pane_key
     }
 }

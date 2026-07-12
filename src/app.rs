@@ -1,10 +1,10 @@
 use crate::action::runner::ActiveTask;
 use crate::config::Settings;
 use crate::model::{
-    chain_commands, remove_command, remove_command_apt, remove_command_dnf, remove_command_flatpak,
-    source_upgrade_command,
-    upgrade_one_command, Action, ActionSpec, CacheSizes, InstalledStats, PackageDetail, PackageHit, PackageRow,
-    Provider, SortDir, SortKey, SourceId, UpdatesInfo,
+    chain_commands, clean_command, remove_command, remove_command_apt, remove_command_dnf,
+    remove_command_flatpak, source_upgrade_command,
+    upgrade_one_command, Action, ActionSpec, CacheSizes, CommandLine, InstalledStats, PackageDetail, PackageHit,
+    PackageRow, Provider, SortDir, SortKey, SourceId, UpdatesInfo,
 };
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -23,6 +23,7 @@ pub enum Focus {
     Main,
     List,
     Filter,
+    Cache,
     TaskPane,
 }
 
@@ -57,6 +58,15 @@ pub struct FilterRow {
     pub label: String,
     pub checked: bool,
     pub id: FilterId,
+}
+
+/// One selectable row in the CACHE sidebar block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheRow {
+    pub label: String,
+    pub text: String,
+    /// `None` marks the total row (clean everything).
+    pub source: Option<SourceId>,
 }
 
 /// A source badge for a results row: its label, its source, and the number of
@@ -216,6 +226,20 @@ fn clamp_index(cur: usize, delta: i32, len: usize) -> usize {
     (cur as i32 + delta).clamp(0, max) as usize
 }
 
+/// Plain source name for the CACHE block (row label and clean-spec target).
+// ponytail: `SourceId::badge()` returns the pacman repo-filter label ("repo"),
+// not a source name, so it doesn't fit here; everywhere else this matches
+// `badge()` exactly.
+fn cache_source_name(id: SourceId) -> &'static str {
+    match id {
+        SourceId::Pacman => "pacman",
+        SourceId::Aur => "aur",
+        SourceId::Flatpak => "flatpak",
+        SourceId::Apt => "apt",
+        SourceId::Dnf => "dnf",
+    }
+}
+
 /// Case-insensitive name order (display, then exact name), always ascending.
 /// Used as the primary order for the Name key and as the stable tiebreak for
 /// every key.
@@ -285,6 +309,10 @@ pub struct App {
     pub stats: InstalledStats,
     pub updates: UpdatesInfo,
     pub cache_sizes: CacheSizes,
+    /// Selected row in the CACHE sidebar block.
+    pub cache_selected: usize,
+    /// Whether `paccache` (pacman-contrib) is on PATH, probed at startup.
+    pub has_paccache: bool,
     pub source_status: Vec<(SourceId, SourceState)>,
     pub focus: Focus,
     pub active_view: ActiveView,
@@ -432,6 +460,8 @@ impl App {
             stats: InstalledStats::default(),
             updates: UpdatesInfo::default(),
             cache_sizes: CacheSizes::default(),
+            cache_selected: 0,
+            has_paccache: false,
             source_status,
             focus: Focus::Search,
             active_view: ActiveView::Search,
@@ -762,9 +792,15 @@ impl App {
             (Focus::Sidebar, Dir::Up) => Focus::Search,
             (Focus::Sidebar, Dir::Right) => top,
             (Focus::Sidebar, Dir::Down) if self.filter_box_visible() => Focus::Filter,
+            (Focus::Sidebar, Dir::Down) if self.cache_block_visible() => Focus::Cache,
 
             (Focus::Filter, Dir::Up) => Focus::Sidebar,
+            (Focus::Filter, Dir::Down) if self.cache_block_visible() => Focus::Cache,
             (Focus::Filter, Dir::Right) => top,
+
+            (Focus::Cache, Dir::Up) if self.filter_box_visible() => Focus::Filter,
+            (Focus::Cache, Dir::Up) => Focus::Sidebar,
+            (Focus::Cache, Dir::Right) => top,
 
             (Focus::Main, Dir::Up) => Focus::Search,
             (Focus::Main, Dir::Left) => Focus::Sidebar,
@@ -1496,6 +1532,118 @@ impl App {
         }
     }
 
+    // --- CACHE sidebar block ---
+
+    /// Mirrors `filter_box_visible`: shown while focused or when the idle
+    /// mode is not Hidden.
+    pub fn cache_block_visible(&self) -> bool {
+        self.settings.cache_block != crate::model::CacheBlockMode::Hidden || self.focus == Focus::Cache
+    }
+
+    /// Full row-per-source form: while focused, or when idle mode is Full.
+    /// Concise (idle) renders as a single total row.
+    pub fn cache_block_expanded(&self) -> bool {
+        self.focus == Focus::Cache || self.settings.cache_block == crate::model::CacheBlockMode::Full
+    }
+
+    /// The block's rows: one per present source, then "total". Unknown sizes
+    /// render as an em-dash; flatpak shows an unused-runtime count.
+    pub fn cache_rows(&self) -> Vec<CacheRow> {
+        use crate::model::human_bytes;
+        let dash = "\u{2014}".to_string();
+        let bytes = |b: Option<u64>| b.map(human_bytes).unwrap_or_else(|| dash.clone());
+        let mut rows: Vec<CacheRow> = self
+            .present_sources()
+            .into_iter()
+            .map(|id| {
+                let text = match id {
+                    SourceId::Pacman => bytes(self.cache_sizes.pacman),
+                    SourceId::Aur => bytes(self.cache_sizes.aur),
+                    SourceId::Apt => bytes(self.cache_sizes.apt),
+                    SourceId::Dnf => bytes(self.cache_sizes.dnf),
+                    SourceId::Flatpak => self
+                        .cache_sizes
+                        .flatpak_unused
+                        .map(|n| format!("{n} unused"))
+                        .unwrap_or_else(|| dash.clone()),
+                };
+                CacheRow { label: cache_source_name(id).to_string(), text, source: Some(id) }
+            })
+            .collect();
+        rows.push(CacheRow {
+            label: "total".into(),
+            text: bytes(self.cache_sizes.total_bytes()),
+            source: None,
+        });
+        rows
+    }
+
+    pub fn move_cache(&mut self, delta: i32) {
+        self.cache_selected = clamp_index(self.cache_selected, delta, self.cache_rows().len());
+    }
+
+    /// `c` hotkey: jump to the block (open+focused) or step back out of it.
+    pub fn toggle_cache_open(&mut self) {
+        if self.focus == Focus::Cache {
+            self.close_cache();
+        } else {
+            self.focus = Focus::Cache;
+            self.interacting = true;
+            self.cache_selected = 0;
+        }
+    }
+
+    pub fn close_cache(&mut self) {
+        if self.focus == Focus::Cache {
+            self.focus = Focus::Sidebar;
+            self.interacting = false;
+        }
+    }
+
+    /// The clean command for one source, gated on tool availability
+    /// (`has_paccache`, the resolved AUR helper). `auto` picks the
+    /// non-interactive form.
+    fn clean_command_for(&self, id: SourceId, auto: bool) -> Option<CommandLine> {
+        if id == SourceId::Pacman && !self.has_paccache {
+            return None;
+        }
+        let aur_bin = self.aur_helper_bin.as_deref().unwrap_or("");
+        clean_command(id, self.settings.cache_keep, aur_bin, auto)
+    }
+
+    /// Build the Clean spec for the selected CACHE row. The total row chains
+    /// every available source's clean; sources whose tool is missing drop
+    /// out. `None` when nothing can run (caller shows a status message).
+    pub fn clean_spec(&self) -> Option<ActionSpec> {
+        let rows = self.cache_rows();
+        let row = rows.get(self.cache_selected.min(rows.len().saturating_sub(1)))?;
+        match row.source {
+            Some(id) => {
+                let command = self.clean_command_for(id, false)?;
+                Some(ActionSpec {
+                    targets: vec![format!("{} cache", cache_source_name(id))],
+                    source_id: id,
+                    action: Action::Clean,
+                    command,
+                })
+            }
+            None => {
+                let sources = self.present_sources();
+                let cmds: Vec<CommandLine> =
+                    sources.iter().filter_map(|id| self.clean_command_for(*id, false)).collect();
+                if cmds.is_empty() {
+                    return None;
+                }
+                Some(ActionSpec {
+                    targets: vec!["all caches".to_string()],
+                    source_id: sources.first().copied().unwrap_or(SourceId::Pacman),
+                    action: Action::Clean,
+                    command: chain_commands(&cmds),
+                })
+            }
+        }
+    }
+
     /// Move the results selection by delta, clamped to the filtered rows.
     pub fn move_selection(&mut self, delta: i32) {
         self.results_selected = clamp_index(self.results_selected, delta, self.search_rows().len());
@@ -1506,7 +1654,7 @@ impl App {
 mod tests {
     use super::*;
 
-    use crate::model::{CommandLine, SourceMeta};
+    use crate::model::SourceMeta;
 
     fn hit(name: &str, source: SourceId) -> PackageHit {
         PackageHit {
@@ -2449,6 +2597,69 @@ mod tests {
         app.toggle_filter(); // hides "b"
         assert_eq!(app.search_rows().len(), 1);
         assert_eq!(app.results_selected, 0); // clamped
+    }
+
+    #[test]
+    fn cache_block_visibility_follows_mode_and_focus() {
+        use crate::model::CacheBlockMode;
+        let mut app = App::with_settings(vec![SourceId::Pacman], Settings::default());
+        assert!(!app.cache_block_visible()); // Hidden default
+        app.focus = Focus::Cache;
+        assert!(app.cache_block_visible()); // focused always shows
+        assert!(app.cache_block_expanded()); // and expands
+        app.focus = Focus::Main;
+        app.settings.cache_block = CacheBlockMode::Concise;
+        assert!(app.cache_block_visible());
+        assert!(!app.cache_block_expanded()); // concise idle = one row
+        app.settings.cache_block = CacheBlockMode::Full;
+        assert!(app.cache_block_expanded());
+    }
+
+    #[test]
+    fn cache_rows_show_present_sources_and_total() {
+        let mut app = App::with_settings(
+            vec![SourceId::Pacman, SourceId::Aur, SourceId::Flatpak],
+            Settings::default(),
+        );
+        app.cache_sizes.pacman = Some(3 * 1024 * 1024 * 1024);
+        app.cache_sizes.flatpak_unused = Some(2);
+        let rows = app.cache_rows();
+        assert_eq!(rows.len(), 4); // pacman, aur, flatpak, total
+        assert_eq!(rows[0].label, "pacman");
+        assert_eq!(rows[0].text, "3.0 GiB");
+        assert_eq!(rows[1].text, "\u{2014}"); // aur size unknown -> dash
+        assert_eq!(rows[2].text, "2 unused");
+        assert_eq!(rows[3].label, "total");
+        assert_eq!(rows[3].source, None);
+    }
+
+    #[test]
+    fn clean_spec_builds_single_source_and_all() {
+        let mut app = App::with_settings(
+            vec![SourceId::Pacman, SourceId::Aur],
+            Settings::default(),
+        );
+        app.has_paccache = true;
+        app.aur_helper_bin = Some("yay".into());
+        app.cache_selected = 0; // pacman row
+        let spec = app.clean_spec().unwrap();
+        assert_eq!(spec.action, Action::Clean);
+        assert_eq!(spec.source_id, SourceId::Pacman);
+        assert_eq!(spec.targets, vec!["pacman cache".to_string()]);
+        assert_eq!(spec.command.args, vec!["paccache", "-rk2"]);
+
+        app.cache_selected = 2; // total row
+        let spec = app.clean_spec().unwrap();
+        assert_eq!(spec.targets, vec!["all caches".to_string()]);
+        assert_eq!(spec.command.program, "sh"); // chained
+
+        // paccache missing: the pacman leg drops out of "all",
+        // and the pacman row itself yields no spec
+        app.has_paccache = false;
+        let spec = app.clean_spec().unwrap();
+        assert_eq!(spec.command.program, "yay"); // only the AUR leg remains
+        app.cache_selected = 0;
+        assert!(app.clean_spec().is_none());
     }
 
     #[test]
