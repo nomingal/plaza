@@ -85,6 +85,32 @@ added later.
   question) and you are not on the pane, the status bar tells you it is waiting
   for input and which key opens the pane to answer.
 
+## Cache cleanup
+
+- A `CACHE` sidebar block shows each present source's package-cache size (and,
+  for Flatpak, its unused-runtime count) plus a total. It is hidden by default;
+  press `c` to open it, or set "Cache block" (in Options, under Appearance) to
+  keep it visible while idle, either concise (one total row) or full (one row
+  per source). Focusing the block always shows the full, row-per-source form
+  regardless of the idle setting.
+- Press Enter on a source row to clean that source, after the normal confirm
+  step. Enter on the `total` row chains a clean of every available source into
+  one task; sources whose tool is missing are dropped from the chain instead of
+  failing it.
+- Cleaning goes through each source's own tool: `paccache -rk<N>` for pacman
+  (needs pacman-contrib), the AUR helper's `-Sc --aur` for the AUR build cache,
+  apt's `autoclean` (keep-N above zero) or `clean` (keep-N at zero), dnf's
+  `clean packages`, and `flatpak uninstall --unused --user` for unused
+  runtimes. "Keep cached versions: N" (Options, General) sets N for pacman
+  directly; apt only distinguishes zero from non-zero, and dnf and Flatpak
+  ignore it since neither keeps versioned cache entries.
+- "Auto clean cache after install/upgrade" (Options, General, off by default)
+  queues a clean for a source once its install or upgrade finishes and no other
+  task for that source is still queued, so a run of several installs from one
+  source gets a single trailing clean rather than one per install. The queued
+  clean uses each tool's non-interactive form so it never stalls waiting for a
+  prompt.
+
 ## Filtering, options, and more
 
 - Filter either list by repository. Press `f` for a checkbox box in the sidebar to
@@ -98,12 +124,14 @@ added later.
 - A small options menu (press `o`), grouped into Appearance, Search, Manage,
   Filters, and General: hide the keybinding hints, collapse all repos into one
   `[official]` badge, switch palette and skin (see [Theming](#theming)), set the
-  search delay, pick the remove depth, choose the AUR helper (auto, yay, or paru),
+  cache block's idle visibility (hidden, concise, or full), set the search
+  delay, pick the remove depth, choose the AUR helper (auto, yay, or paru),
   toggle variant stacking and Flatpak grouping, pick the variant-badge style,
   float upgradable packages to the top of Manage, choose whether the filter box
   hides when idle, set how the matched substring is drawn (off, color, underline,
-  or both), and turn notifications on or off. Settings are saved to
-  `~/.config/plaza/settings.json`.
+  or both), turn notifications on or off, turn auto clean cache after
+  install/upgrade on or off, and set how many cached versions it keeps. Settings
+  are saved to `~/.config/plaza/settings.json`.
 - Desktop notifications (via `notify-send`, on by default): when a background task
   finishes or stops for input while you are not watching its pane, Plaza notifies
   you so a forgotten install never sits silently at a prompt.
@@ -120,7 +148,8 @@ Arch:
 - pacman, for official-repo search, install, and removal
 - an AUR helper (yay or paru), for AUR installs and upgrades. AUR search itself
   needs no helper; with neither installed you can still browse AUR results
-- checkupdates (from pacman-contrib), for live update counts without root
+- checkupdates (from pacman-contrib), for live update counts without root, and
+  cache cleaning via paccache
 - flatpak with a remote configured (optional), to search and install from Flatpak.
   Installs use `--user`. With no remote, the Flatpak source stays off
 
@@ -196,6 +225,7 @@ Plaza has two modes, like a tiling layout you tab around:
 | Enter (in Manage list) | open the action menu (upgrade/remove/cancel) if the package has an update, else remove it |
 | u | jump to the sidebar upgrade block (cursor on `total`, so Enter upgrades all) |
 | Enter (on a sidebar upgrade row) | upgrade that source; Enter on `total` upgrades all |
+| c | open or close the cache block; Enter cleans the selected source |
 | backtick | open or collapse the action pane |
 | j/k, d, x (in the action pane) | move within the queue, remove the selected item, or clear it |
 | Ctrl-C in a focused action | cancel that action |
