@@ -671,6 +671,65 @@ pub fn source_upgrade_command(source_id: SourceId, aur_bin: &str) -> CommandLine
     }
 }
 
+/// The cache-clean command for one source. `keep` is the number of cached
+/// versions to keep (0 = delete everything); only pacman honors it exactly,
+/// apt maps it to autoclean/clean. `auto` builds the non-interactive form for
+/// auto-clean-after-install, so a queued clean never stalls on a prompt.
+/// `None` when no command can be built (AUR without a helper). Tool presence
+/// (paccache on PATH) is gated by the caller.
+pub fn clean_command(
+    source_id: SourceId,
+    keep: u32,
+    aur_bin: &str,
+    auto: bool,
+) -> Option<CommandLine> {
+    match source_id {
+        // Always paccache (non-interactive), never `pacman -Sc`: -rk<N> covers
+        // both keep-some and (-rk0) delete-all, and preserves downgrade safety
+        // by default.
+        SourceId::Pacman => Some(CommandLine {
+            program: "sudo".into(),
+            args: vec!["paccache".into(), format!("-rk{keep}")],
+        }),
+        // The helper's own clean, limited to the AUR build cache so the pacman
+        // cache is not double-cleaned (paccache owns that).
+        SourceId::Aur => {
+            if aur_bin.is_empty() {
+                return None;
+            }
+            let mut args = vec!["-Sc".to_string(), "--aur".to_string()];
+            if auto {
+                args.push("--noconfirm".into());
+            }
+            Some(CommandLine { program: aur_bin.into(), args })
+        }
+        // apt has no keep-N: autoclean drops only no-longer-downloadable debs,
+        // clean drops all of them.
+        SourceId::Apt => Some(CommandLine {
+            program: "sudo".into(),
+            args: vec![
+                "apt-get".into(),
+                if keep > 0 { "autoclean".into() } else { "clean".into() },
+            ],
+        }),
+        // Packages only; `clean all` would drop metadata and force a slow
+        // re-sync on the next dnf call.
+        SourceId::Dnf => Some(CommandLine {
+            program: "sudo".into(),
+            args: vec!["dnf".into(), "clean".into(), "packages".into()],
+        }),
+        // Plaza installs flatpaks --user, so unused runtimes accumulate there.
+        SourceId::Flatpak => {
+            let mut args =
+                vec!["uninstall".to_string(), "--unused".to_string(), "--user".to_string()];
+            if auto {
+                args.push("--noninteractive".into());
+            }
+            Some(CommandLine { program: "flatpak".into(), args })
+        }
+    }
+}
+
 /// Chain commands into one `sh -c "a && b"` so they run as a single PTY task
 /// (used by "upgrade all" to upgrade each source in order). A single command is
 /// returned unwrapped; an empty slice yields a harmless `true`.
@@ -1213,5 +1272,39 @@ mod tests {
         };
         assert!(row.any_installed());
         assert!(row.has_source(SourceId::Aur));
+    }
+
+    #[test]
+    fn clean_commands_per_source() {
+        let c = clean_command(SourceId::Pacman, 2, "", false).unwrap();
+        assert_eq!(c.program, "sudo");
+        assert_eq!(c.args, vec!["paccache", "-rk2"]);
+        // keep = 0 deletes everything, still via paccache
+        let c = clean_command(SourceId::Pacman, 0, "", false).unwrap();
+        assert_eq!(c.args, vec!["paccache", "-rk0"]);
+
+        let c = clean_command(SourceId::Aur, 2, "yay", false).unwrap();
+        assert_eq!(c.program, "yay");
+        assert_eq!(c.args, vec!["-Sc", "--aur"]);
+        // auto mode must not stall on prompts
+        let c = clean_command(SourceId::Aur, 2, "yay", true).unwrap();
+        assert_eq!(c.args, vec!["-Sc", "--aur", "--noconfirm"]);
+        // no helper -> no command
+        assert!(clean_command(SourceId::Aur, 2, "", false).is_none());
+
+        // apt: keep-N maps to autoclean (conservative) vs clean (everything)
+        let c = clean_command(SourceId::Apt, 2, "", false).unwrap();
+        assert_eq!(c.args, vec!["apt-get", "autoclean"]);
+        let c = clean_command(SourceId::Apt, 0, "", false).unwrap();
+        assert_eq!(c.args, vec!["apt-get", "clean"]);
+
+        let c = clean_command(SourceId::Dnf, 2, "", false).unwrap();
+        assert_eq!(c.args, vec!["dnf", "clean", "packages"]);
+
+        let c = clean_command(SourceId::Flatpak, 2, "", false).unwrap();
+        assert_eq!(c.program, "flatpak");
+        assert_eq!(c.args, vec!["uninstall", "--unused", "--user"]);
+        let c = clean_command(SourceId::Flatpak, 2, "", true).unwrap();
+        assert_eq!(c.args, vec!["uninstall", "--unused", "--user", "--noninteractive"]);
     }
 }
