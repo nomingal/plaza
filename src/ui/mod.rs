@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 
+pub mod cache;
 pub mod detail;
 pub mod filter;
 pub mod main_view;
@@ -71,23 +72,37 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// The left column: the stats/views box, plus the repo-filter box below it when
-/// it is open or a filter is active. The top box is a fixed height (its content
-/// does not vary); the filter box takes the rest.
+/// The left column: the stats/views box, plus the repo-filter box and the cache
+/// block below it when either is open or active. The top box is a fixed height
+/// (its content does not vary); the filter box takes the rest and the cache
+/// block (sized to its own row count) sits under that.
 fn draw_sidebar_column(frame: &mut Frame, app: &App, area: Rect) {
-    if !app.filter_box_visible() {
+    let filter_visible = app.filter_box_visible();
+    let cache_visible = app.cache_block_visible();
+    if !filter_visible && !cache_visible {
         sidebar::draw(frame, app, area);
         return;
     }
     // ponytail: sidebar content is at most ~12 lines (incl. borders); recompute
     // if the top box gains rows. The new-version note adds 4 when present.
     let top = if app.newer_version.is_some() { 16 } else { 12 };
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(top), Constraint::Min(0)])
-        .split(area);
+    let mut constraints = vec![Constraint::Length(top)];
+    if filter_visible {
+        constraints.push(Constraint::Min(0));
+    }
+    if cache_visible {
+        constraints.push(Constraint::Length(cache::height(app)));
+    }
+    let chunks = Layout::default().direction(Direction::Vertical).constraints(constraints).split(area);
     sidebar::draw(frame, app, chunks[0]);
-    filter::draw(frame, app, chunks[1]);
+    let mut next = 1;
+    if filter_visible {
+        filter::draw(frame, app, chunks[next]);
+        next += 1;
+    }
+    if cache_visible {
+        cache::draw(frame, app, chunks[next]);
+    }
 }
 
 // --- shared themed helpers ---------------------------------------------------

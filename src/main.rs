@@ -99,6 +99,8 @@ async fn run_tui() -> anyhow::Result<()> {
     // `checkupdates` (pacman-contrib) syncs a private db so update counts stay
     // live without root; without it we fall back to a stale `pacman -Qu`.
     app.has_checkupdates = sources::which("checkupdates");
+    // `paccache` (pacman-contrib) is what powers the pacman leg of cache cleans.
+    app.has_paccache = sources::which("paccache");
     // Probed once at startup; drives hiding of Arch-only UI on non-Arch systems.
     app.pacman_present = sources::which("pacman");
     // Detect AUR helpers (yay/paru) and resolve the active one from settings.
@@ -1162,6 +1164,13 @@ fn handle_key(app: &mut App, key: KeyEvent, tx: &UnboundedSender<AppEvent>) {
         return;
     }
 
+    // `c` toggles the cache block (unless typing in the search field). The
+    // manage-menu overlay consumes `c` earlier in dispatch, which is correct.
+    if key.code == KeyCode::Char('c') && !(app.focus == Focus::Search && app.interacting) {
+        app.toggle_cache_open();
+        return;
+    }
+
     // Two modes: navigate (move the hovered panel) and interact (act inside the
     // focused panel). Enter/Space activates; Esc steps back out.
     if app.interacting {
@@ -1196,7 +1205,7 @@ fn handle_interact_key(app: &mut App, key: KeyEvent, tx: &UnboundedSender<AppEve
         Focus::Main => interact_main(app, key, tx),
         Focus::List => interact_list(app, key),
         Focus::Filter => interact_filter(app, key),
-        Focus::Cache => {} // real handler arrives in a later task
+        Focus::Cache => interact_cache(app, key),
         Focus::TaskPane => {} // the task pane owns input via handle_task_pane_key
     }
 }
@@ -1506,6 +1515,27 @@ fn interact_filter(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') | KeyCode::Enter => app.toggle_filter(),
         KeyCode::Char('s') => app.save_filter_default(),
         KeyCode::Esc => app.close_filter(),
+        _ => {}
+    }
+}
+
+/// Interact: the CACHE block. j/k move, Enter opens the confirm modal to clean
+/// the selected row's source (or all sources, on total), Esc steps back out.
+fn interact_cache(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => app.move_cache(-1),
+        KeyCode::Down | KeyCode::Char('j') => app.move_cache(1),
+        KeyCode::Enter => match app.clean_spec() {
+            Some(spec) => {
+                app.confirm = Some(spec);
+                app.confirm_note = None;
+            }
+            None => {
+                app.status_msg =
+                    Some("nothing to clean (is paccache/pacman-contrib installed?)".to_string());
+            }
+        },
+        KeyCode::Esc => app.close_cache(),
         _ => {}
     }
 }
