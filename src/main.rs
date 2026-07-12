@@ -320,6 +320,12 @@ fn handle_event(
                         }
                     }
                 }
+                if success {
+                    let finished_spec = app.task.as_ref().map(|t| t.spec.clone());
+                    if let Some(spec) = finished_spec.and_then(|s| app.auto_clean_spec(&s)) {
+                        app.enqueue(spec);
+                    }
+                }
                 if success && !app.queue.is_empty() {
                     // Auto-advance: drop the finished task and start the next item.
                     // Do not surface; keep the user wherever they currently are.

@@ -1611,6 +1611,23 @@ impl App {
         clean_command(id, self.settings.cache_keep, aur_bin, auto)
     }
 
+    /// The chained clean for every present source whose tool is available.
+    /// `auto` picks the non-interactive command forms.
+    fn clean_all_spec(&self, auto: bool) -> Option<ActionSpec> {
+        let sources = self.present_sources();
+        let cmds: Vec<CommandLine> =
+            sources.iter().filter_map(|id| self.clean_command_for(*id, auto)).collect();
+        if cmds.is_empty() {
+            return None;
+        }
+        Some(ActionSpec {
+            targets: vec!["all caches".to_string()],
+            source_id: sources.first().copied().unwrap_or(SourceId::Pacman),
+            action: Action::Clean,
+            command: chain_commands(&cmds),
+        })
+    }
+
     /// Build the Clean spec for the selected CACHE row. The total row chains
     /// every available source's clean; sources whose tool is missing drop
     /// out. `None` when nothing can run (caller shows a status message).
@@ -1627,21 +1644,34 @@ impl App {
                     command,
                 })
             }
-            None => {
-                let sources = self.present_sources();
-                let cmds: Vec<CommandLine> =
-                    sources.iter().filter_map(|id| self.clean_command_for(*id, false)).collect();
-                if cmds.is_empty() {
-                    return None;
-                }
-                Some(ActionSpec {
-                    targets: vec!["all caches".to_string()],
-                    source_id: sources.first().copied().unwrap_or(SourceId::Pacman),
-                    action: Action::Clean,
-                    command: chain_commands(&cmds),
-                })
-            }
+            None => self.clean_all_spec(false),
         }
+    }
+
+    /// The clean to auto-queue after `finished` succeeded, or `None`. Fires
+    /// only for installs/upgrades with the setting on, and only when no other
+    /// task for the same source is still queued (a chain of installs gets one
+    /// trailing clean, not one per install). An "all" upgrade cleans all
+    /// sources. Never fires for a Clean, so it cannot loop.
+    pub fn auto_clean_spec(&self, finished: &ActionSpec) -> Option<ActionSpec> {
+        if !self.settings.auto_clean
+            || !matches!(finished.action, Action::Install | Action::Upgrade)
+        {
+            return None;
+        }
+        if self.queue.iter().any(|q| q.source_id == finished.source_id) {
+            return None;
+        }
+        if finished.action == Action::Upgrade && finished.targets == ["all".to_string()] {
+            return self.clean_all_spec(true);
+        }
+        let command = self.clean_command_for(finished.source_id, true)?;
+        Some(ActionSpec {
+            targets: vec![format!("{} cache", cache_source_name(finished.source_id))],
+            source_id: finished.source_id,
+            action: Action::Clean,
+            command,
+        })
     }
 
     /// Move the results selection by delta, clamped to the filtered rows.
@@ -2660,6 +2690,81 @@ mod tests {
         assert_eq!(spec.command.program, "yay"); // only the AUR leg remains
         app.cache_selected = 0;
         assert!(app.clean_spec().is_none());
+    }
+
+    fn auto_clean_spec_input(source: SourceId, action: Action, target: &str) -> ActionSpec {
+        ActionSpec {
+            targets: vec![target.to_string()],
+            source_id: source,
+            action,
+            command: CommandLine { program: "true".into(), args: vec![] },
+        }
+    }
+
+    #[test]
+    fn auto_clean_fires_after_install_and_upgrade_only() {
+        let mut app = App::with_settings(vec![SourceId::Pacman], Settings::default());
+        app.has_paccache = true;
+        let inst = auto_clean_spec_input(SourceId::Pacman, Action::Install, "firefox");
+        assert!(app.auto_clean_spec(&inst).is_none()); // setting off
+        app.settings.auto_clean = true;
+        let c = app.auto_clean_spec(&inst).unwrap();
+        assert_eq!(c.action, Action::Clean);
+        assert_eq!(c.source_id, SourceId::Pacman);
+        // upgrades trigger too; removes and cleans never do
+        assert!(
+            app.auto_clean_spec(&auto_clean_spec_input(SourceId::Pacman, Action::Upgrade, "x"))
+                .is_some()
+        );
+        assert!(
+            app.auto_clean_spec(&auto_clean_spec_input(SourceId::Pacman, Action::Remove, "x"))
+                .is_none()
+        );
+        assert!(
+            app.auto_clean_spec(&auto_clean_spec_input(SourceId::Pacman, Action::Clean, "x"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn auto_clean_waits_for_queued_same_source_tasks() {
+        let mut app = App::with_settings(vec![SourceId::Pacman], Settings::default());
+        app.has_paccache = true;
+        app.settings.auto_clean = true;
+        let inst = auto_clean_spec_input(SourceId::Pacman, Action::Install, "firefox");
+        app.enqueue(auto_clean_spec_input(SourceId::Pacman, Action::Install, "vlc"));
+        assert!(app.auto_clean_spec(&inst).is_none()); // vlc still queued
+        app.queue.clear();
+        app.enqueue(auto_clean_spec_input(SourceId::Aur, Action::Install, "spotify"));
+        assert!(app.auto_clean_spec(&inst).is_some()); // other source queued is fine
+    }
+
+    #[test]
+    fn auto_clean_after_upgrade_all_cleans_all() {
+        let mut app = App::with_settings(
+            vec![SourceId::Pacman, SourceId::Aur],
+            Settings::default(),
+        );
+        app.has_paccache = true;
+        app.aur_helper_bin = Some("yay".into());
+        app.settings.auto_clean = true;
+        let all = auto_clean_spec_input(SourceId::Pacman, Action::Upgrade, "all");
+        let c = app.auto_clean_spec(&all).unwrap();
+        assert_eq!(c.targets, vec!["all caches".to_string()]);
+        // auto form: the AUR leg carries --noconfirm
+        let joined = format!("{} {}", c.command.program, c.command.args.join(" "));
+        assert!(joined.contains("--noconfirm"), "auto clean must be non-interactive: {joined}");
+    }
+
+    #[test]
+    fn auto_clean_none_when_tool_missing() {
+        let mut app = App::with_settings(vec![SourceId::Pacman], Settings::default());
+        app.settings.auto_clean = true;
+        app.has_paccache = false;
+        assert!(
+            app.auto_clean_spec(&auto_clean_spec_input(SourceId::Pacman, Action::Install, "x"))
+                .is_none()
+        );
     }
 
     #[test]
