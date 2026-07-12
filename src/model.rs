@@ -749,6 +749,25 @@ pub fn days_ago(ts: i64, now: i64) -> i64 {
     (now - ts).max(0) / 86_400
 }
 
+/// 1024-based human size for the CACHE block (`4.2 GiB`, `890 MiB`). One
+/// decimal below 10 units, none above, so the sidebar column stays narrow.
+pub fn human_bytes(b: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = b as f64;
+    let mut unit = 0;
+    while v >= 1024.0 && unit < UNITS.len() - 1 {
+        v /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{b} B")
+    } else if v < 10.0 {
+        format!("{v:.1} {}", UNITS[unit])
+    } else {
+        format!("{v:.0} {}", UNITS[unit])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -980,6 +999,15 @@ mod tests {
         assert_eq!(days_ago(now - 3 * 86_400, now), 3);
         assert_eq!(days_ago(now, now), 0);
         assert_eq!(days_ago(now + 86_400, now), 0); // future clamps to 0
+    }
+
+    #[test]
+    fn human_bytes_formats_1024_based() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(2048), "2.0 KiB");
+        assert_eq!(human_bytes(890 * 1024 * 1024), "890 MiB");
+        assert_eq!(human_bytes(4 * 1024 * 1024 * 1024 + 200 * 1024 * 1024), "4.2 GiB");
     }
 
     #[test]
