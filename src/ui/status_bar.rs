@@ -97,7 +97,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 },
                 Focus::List => "↑↓ move · ⏎ actions · r remove · u all · esc back",
                 Focus::Filter => "↑↓ move · space toggle · s save default · f/esc close",
-                Focus::Cache => "↑↓ move · space toggle · s save default · f/esc close",
+                Focus::Cache => "↑↓ move · ⏎ clean · esc close",
                 Focus::TaskPane => "task pane · `=collapse",
             }
         };

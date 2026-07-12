@@ -390,4 +390,13 @@ mod tests {
         assert_eq!(s.cache_keep, 2);
         assert_eq!(s.cache_block, crate::model::CacheBlockMode::Hidden);
     }
+
+    #[test]
+    fn old_settings_without_cache_fields_load_defaults() {
+        let json = r#"{"show_hotkeys":true,"debounce_ms":400}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!(!s.auto_clean);
+        assert_eq!(s.cache_keep, 2);
+        assert_eq!(s.cache_block, crate::model::CacheBlockMode::Hidden);
+    }
 }

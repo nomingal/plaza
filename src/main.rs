@@ -29,6 +29,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io;
 use std::io::Write as _;
+use tokio::io::AsyncWriteExt as _;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
@@ -439,8 +440,10 @@ fn start_next(app: &mut App, tx: &UnboundedSender<AppEvent>, surface: bool) {
 
 /// Scan cache sizes in the background and send one `CacheSizes` event.
 /// Byte sums are `None` for absent sources or unreadable dirs; the flatpak
-/// probe runs `flatpak uninstall --unused` with stdin closed (it prints the
-/// list, then aborts at the proceed prompt without stdin) and parses the count.
+/// probe runs `flatpak uninstall --unused` and answers its `[Y/n]` proceed
+/// prompt with an explicit "n" (rather than relying on EOF-on-closed-stdin,
+/// whose behavior across flatpak versions is unverified and whose default
+/// is yes) so nothing is ever actually uninstalled, then parses the count.
 fn spawn_cache_scan(tx: UnboundedSender<AppEvent>, present: Vec<SourceId>, aur_bin: Option<String>) {
     tokio::spawn(async move {
         let scan_present = present.clone();
@@ -462,28 +465,42 @@ fn spawn_cache_scan(tx: UnboundedSender<AppEvent>, present: Vec<SourceId>, aur_b
             }
             if scan_present.contains(&SourceId::Dnf) {
                 // dnf5 and dnf4 cache roots; count only cleanable packages,
-                // not metadata (which `dnf clean packages` leaves alone).
-                s.dnf = dir_size(Path::new("/var/cache/libdnf5"), Some("rpm"))
-                    .or_else(|| dir_size(Path::new("/var/cache/dnf"), Some("rpm")));
+                // not metadata (which `dnf clean packages` leaves alone). Both
+                // roots can be populated (a system that migrated dnf4 -> dnf5),
+                // so sum them when both exist rather than letting a merely
+                // *present but empty* libdnf5 dir mask a populated legacy dir.
+                let libdnf5 = dir_size(Path::new("/var/cache/libdnf5"), Some("rpm"));
+                let dnf4 = dir_size(Path::new("/var/cache/dnf"), Some("rpm"));
+                s.dnf = match (libdnf5, dnf4) {
+                    (Some(a), Some(b)) => Some(a + b),
+                    (a, b) => a.or(b),
+                };
             }
             s
         })
         .await
         .unwrap_or_default();
         if present.contains(&SourceId::Flatpak) {
-            let out = Command::new("flatpak")
+            let child = Command::new("flatpak")
                 .args(["uninstall", "--unused", "--user"])
                 .env("LC_ALL", "C")
-                .stdin(std::process::Stdio::null())
-                .output()
-                .await;
-            if let Ok(out) = out {
-                let text = format!(
-                    "{}{}",
-                    String::from_utf8_lossy(&out.stdout),
-                    String::from_utf8_lossy(&out.stderr)
-                );
-                sizes.flatpak_unused = crate::sources::flatpak::parse_unused_output(&text);
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn();
+            if let Ok(mut child) = child {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(b"n\n").await;
+                    drop(stdin);
+                }
+                if let Ok(out) = child.wait_with_output().await {
+                    let text = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    sizes.flatpak_unused = crate::sources::flatpak::parse_unused_output(&text);
+                }
             }
         }
         let _ = tx.send(AppEvent::CacheSizes(sizes));
