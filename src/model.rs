@@ -211,6 +211,9 @@ pub enum Action {
     Remove,
     /// Upgrade packages: a single source, or every source chained together.
     Upgrade,
+    /// Clean a source's package cache (paccache, apt-get clean, dnf clean,
+    /// AUR helper cache, flatpak unused runtimes).
+    Clean,
 }
 
 impl Action {
@@ -220,6 +223,7 @@ impl Action {
             Action::Install => "install",
             Action::Remove => "remove",
             Action::Upgrade => "upgrade",
+            Action::Clean => "clean",
         }
     }
 
@@ -229,6 +233,7 @@ impl Action {
             Action::Install => "installing",
             Action::Remove => "removing",
             Action::Upgrade => "upgrading",
+            Action::Clean => "cleaning",
         }
     }
 }
@@ -1150,6 +1155,8 @@ mod tests {
         assert_eq!(Action::Install.verb(), "install");
         assert_eq!(Action::Remove.verb(), "remove");
         assert_eq!(Action::Upgrade.verb(), "upgrade");
+        assert_eq!(Action::Clean.verb(), "clean");
+        assert_eq!(Action::Clean.verb_ing(), "cleaning");
     }
 
     #[test]

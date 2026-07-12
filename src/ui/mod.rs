@@ -259,6 +259,7 @@ fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) {
         }
         Action::Remove => format!("Remove {}", spec.targets.join(", ")),
         Action::Upgrade => format!("Upgrade {} packages", spec.targets.join(", ")),
+        Action::Clean => format!("Clean {}", spec.targets.join(", ")),
     };
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
