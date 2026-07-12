@@ -374,6 +374,17 @@ fn option_row_text(app: &App, id: OptionId) -> String {
         OptionId::CheckUpdates => {
             format!("{} Check for plaza updates", check(app.settings.check_updates))
         }
+        OptionId::AutoClean => {
+            format!("{} Auto clean cache after install/upgrade", check(app.settings.auto_clean))
+        }
+        OptionId::CacheKeep => format!(
+            "    Keep cached versions: {}{}",
+            app.settings.cache_keep,
+            if app.settings.cache_keep == 0 { " (clean all)" } else { "" }
+        ),
+        OptionId::CacheBlock => {
+            format!("    Cache block: {}", app.settings.cache_block.label())
+        }
     }
 }
 

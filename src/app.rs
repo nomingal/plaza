@@ -98,6 +98,9 @@ pub enum OptionId {
     HideIdleFilter,
     Notifications,
     CheckUpdates,
+    AutoClean,
+    CacheKeep,
+    CacheBlock,
 }
 
 /// Per-view repo-filter state: the unchecked repo ids and the box cursor. Search
@@ -618,11 +621,11 @@ impl App {
         use OptionId::*;
         let arch_only = |id: &OptionId| matches!(id, CollapseRepos | AurHelper | StackVariants);
         let groups: &[(&'static str, &'static [OptionId])] = &[
-            ("Appearance", &[Palette, Skin, Highlight]),
+            ("Appearance", &[Palette, Skin, Highlight, CacheBlock]),
             ("Search", &[SearchDelay, CollapseRepos, StackVariants, GroupFlatpak, VariantBadge]),
             ("Manage", &[RemoveDepth, AurHelper, FlatpakAppId, FloatUpdates]),
             ("Filters", &[HideIdleFilter]),
-            ("General", &[ShowHotkeys, Notifications, CheckUpdates]),
+            ("General", &[ShowHotkeys, Notifications, CheckUpdates, AutoClean, CacheKeep]),
         ];
         groups
             .iter()
@@ -685,6 +688,13 @@ impl App {
             OptionId::AurHelper => self.cycle_aur_helper(),
             OptionId::HideIdleFilter => {
                 self.settings.hide_idle_filter = !self.settings.hide_idle_filter
+            }
+            OptionId::AutoClean => self.settings.auto_clean = !self.settings.auto_clean,
+            OptionId::CacheKeep => {
+                self.settings.cache_keep = crate::model::next_cache_keep(self.settings.cache_keep)
+            }
+            OptionId::CacheBlock => {
+                self.settings.cache_block = self.settings.cache_block.next()
             }
         }
         self.settings.save();
@@ -1739,6 +1749,22 @@ mod tests {
             app.flat_options().iter().position(|o| *o == OptionId::CheckUpdates).unwrap();
         app.toggle_option();
         assert!(!app.settings.check_updates);
+    }
+
+    #[test]
+    fn cache_options_toggle_and_cycle() {
+        use crate::model::CacheBlockMode;
+        let mut app = App::with_settings(vec![SourceId::Pacman], Settings::default());
+        let flat = app.flat_options();
+        app.options_selected = flat.iter().position(|o| *o == OptionId::AutoClean).unwrap();
+        app.toggle_option();
+        assert!(app.settings.auto_clean);
+        app.options_selected = flat.iter().position(|o| *o == OptionId::CacheKeep).unwrap();
+        app.toggle_option();
+        assert_eq!(app.settings.cache_keep, 3); // 2 -> 3
+        app.options_selected = flat.iter().position(|o| *o == OptionId::CacheBlock).unwrap();
+        app.toggle_option();
+        assert_eq!(app.settings.cache_block, CacheBlockMode::Concise);
     }
 
     #[test]
