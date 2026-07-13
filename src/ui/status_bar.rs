@@ -85,7 +85,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         let manage = app.active_view == ActiveView::Manage;
         let keys = if !app.interacting {
             // navigate mode: moving the hovered panel
-            "navigate · ↑↓←→ move · ⏎ focus · / search · f filter · ⇥ view · o opts · q quit"
+            "navigate · ↑↓←→ move · ⏎ focus · / search · f filter · c cache · ⇥ view · o opts · q quit"
         } else {
             match app.focus {
                 Focus::Search if manage => "filter · type · ⏎ list · esc back",
