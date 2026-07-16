@@ -2,7 +2,7 @@
 
 ![Plaza demo](demo.gif)
 
-# there will be no updates between 16th Jul and 4th Aug as im going on summer holidays.
+there will be no updates between 16th Jul and 4th Aug as im going on summer holidays.
 
 Plaza is a customizable, riceable terminal UI for finding, installing, and
 managing packages. You search once and it queries every package source on the
