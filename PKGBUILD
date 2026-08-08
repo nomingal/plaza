@@ -1,6 +1,6 @@
 # Maintainer: staszek <staszekborkowski7@gmail.com>
 pkgname=plaza
-pkgver=1.1.1
+pkgver=1.1.2
 pkgrel=1
 pkgdesc="Cross-distro TUI package-manager browser (pacman, AUR, apt, dnf, Flatpak)"
 arch=('x86_64')
