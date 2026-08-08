@@ -124,7 +124,20 @@ fn draw_results(frame: &mut Frame, app: &App, area: Rect) {
     let cursor = crate::ui::cursor_symbol(app);
 
     let rows = app.search_rows();
-    let items: Vec<ListItem> = rows
+    let total = rows.len();
+    // Build ListItems for the visible window only. A short query against the dnf
+    // catalog yields tens of thousands of rows, and every item here allocates
+    // several Strings and Spans; doing that for the whole list on every frame cost
+    // ~80ms per redraw at that size, on top of whatever else the frame did.
+    // The block is built first so its real inner height (the skin can turn borders
+    // off) drives the window.
+    let block = crate::ui::themed_block(app, border, format!(" results ({total}) "));
+    let height = block.inner(area).height as usize;
+    let selected = app.results_selected.min(total.saturating_sub(1));
+    let offset = scroll_offset(app.results_offset.get(), selected, total, height);
+    let window = &rows[offset..(offset + height).min(total)];
+
+    let items: Vec<ListItem> = window
         .iter()
         .map(|row| {
             let shown = app.effective_providers(row);
@@ -172,17 +185,36 @@ fn draw_results(frame: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let list = List::new(items)
-        .block(crate::ui::themed_block(app, border, format!(" results ({}) ", rows.len())))
+        .block(block)
         .highlight_style(crate::ui::highlight_style(app))
         .highlight_symbol(&cursor);
 
+    // The widget is handed the window, so the selection is indexed within it and
+    // its own offset stays 0; `scroll_offset` above already did the scrolling.
     let mut state = ListState::default();
-    *state.offset_mut() = app.results_offset.get();
-    if !rows.is_empty() {
-        state.select(Some(app.results_selected.min(rows.len() - 1)));
+    if total > 0 {
+        state.select(Some(selected - offset));
     }
     frame.render_stateful_widget(list, area, &mut state);
-    app.results_offset.set(state.offset());
+    app.results_offset.set(offset);
+}
+
+/// Scroll offset for a list of `len` single-line rows in a viewport `height`
+/// tall: keep `prev` unless the selection has moved out of view, and never leave
+/// blank space past the end. This is the scrolling ratatui's `List` would do
+/// internally, hoisted out so only the visible slice needs building.
+fn scroll_offset(prev: usize, selected: usize, len: usize, height: usize) -> usize {
+    if height == 0 || len == 0 {
+        return 0;
+    }
+    let max = len.saturating_sub(height);
+    let mut off = prev.min(max);
+    if selected < off {
+        off = selected;
+    } else if selected >= off + height {
+        off = selected + 1 - height;
+    }
+    off.min(max)
 }
 
 /// The package-name cell for a list: the name padded to 28 chars, with the part
@@ -226,5 +258,36 @@ fn truncate(s: &str, max: usize) -> String {
         let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
         out.push('…');
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scroll_offset;
+
+    #[test]
+    fn scroll_offset_keeps_viewport_until_selection_leaves_it() {
+        // Selection inside the current window: the window does not move.
+        assert_eq!(scroll_offset(10, 12, 100, 10), 10);
+        assert_eq!(scroll_offset(10, 10, 100, 10), 10);
+        assert_eq!(scroll_offset(10, 19, 100, 10), 10);
+        // Moving above the window pulls it up to the selection.
+        assert_eq!(scroll_offset(10, 9, 100, 10), 9);
+        assert_eq!(scroll_offset(10, 0, 100, 10), 0);
+        // Moving below scrolls just far enough to show it at the bottom row.
+        assert_eq!(scroll_offset(10, 20, 100, 10), 11);
+        assert_eq!(scroll_offset(10, 99, 100, 10), 90);
+    }
+
+    #[test]
+    fn scroll_offset_never_leaves_blank_space_or_underflows() {
+        // Fewer rows than the viewport: always start at the top.
+        assert_eq!(scroll_offset(5, 2, 3, 10), 0);
+        // A stale offset past the new end is pulled back.
+        assert_eq!(scroll_offset(90, 0, 20, 10), 0);
+        assert_eq!(scroll_offset(90, 19, 20, 10), 10);
+        // Degenerate sizes.
+        assert_eq!(scroll_offset(4, 0, 0, 10), 0);
+        assert_eq!(scroll_offset(4, 3, 100, 0), 0);
     }
 }

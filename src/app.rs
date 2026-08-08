@@ -8,6 +8,7 @@ use crate::model::{
 };
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use crate::search::aggregator::{merge, rank, relevance_sort};
 use crate::sources::installed::{InstalledIndex, InstalledPkg};
 use crate::sources::updates::UpdateEntry;
@@ -302,13 +303,52 @@ pub enum TaskView {
 /// Number of entries in the sidebar VIEWS list (Search / Manage).
 pub const VIEW_COUNT: usize = 2;
 
+/// A self-contained snapshot of everything a merge+sort needs, so it can run off
+/// the event loop. Building one is cheap (an `Arc` clone per source); running one
+/// is not: cost scales with the whole result set, and a short query against a
+/// source that serves an in-memory catalog (dnf) matches tens of thousands of
+/// packages. Running it on the event loop froze the UI for the whole duration.
+pub struct MergeJob {
+    pub query_id: u64,
+    pub merge_id: u64,
+    hits: Vec<Arc<Vec<PackageHit>>>,
+    installed: Arc<InstalledIndex>,
+    stack_variants: bool,
+    group_flatpak: bool,
+    query: String,
+}
+
+impl MergeJob {
+    /// Merge the buffered hits into sorted rows. Pure and CPU-bound; call it from
+    /// a blocking task, never from the event loop.
+    pub fn run(&self) -> Vec<PackageRow> {
+        let mut rows = merge(
+            self.hits.iter().flat_map(|h| h.iter()),
+            &self.installed,
+            self.stack_variants,
+            self.group_flatpak,
+        );
+        relevance_sort(&self.query, &mut rows);
+        rows
+    }
+}
+
 pub struct App {
     pub query: String,
     pub query_id: u64,
     pub debounce_gen: u64,
+    /// Monotonic id per dispatched merge. Merges run off the event loop and can
+    /// finish out of order (each source's arrival dispatches one over the whole
+    /// buffer, so a later merge subsumes an earlier one); `applied_merge_id`
+    /// records the newest result already on screen so a straggler is dropped.
+    pub merge_id: u64,
+    pub applied_merge_id: u64,
     pub rows: Vec<PackageRow>,
-    pub hits_buffer: Vec<PackageHit>,
-    pub installed: InstalledIndex,
+    /// Raw hits for the current query, kept per source rather than concatenated
+    /// so handing them to a merge costs an `Arc` clone per source instead of a
+    /// copy of every hit.
+    pub hits_by_source: Vec<(SourceId, Arc<Vec<PackageHit>>)>,
+    pub installed: Arc<InstalledIndex>,
     pub stats: InstalledStats,
     pub updates: UpdatesInfo,
     pub cache_sizes: CacheSizes,
@@ -456,10 +496,12 @@ impl App {
         App {
             query: String::new(),
             query_id: 0,
+            merge_id: 0,
+            applied_merge_id: 0,
             debounce_gen: 0,
             rows: Vec::new(),
-            hits_buffer: Vec::new(),
-            installed: InstalledIndex::default(),
+            hits_by_source: Vec::new(),
+            installed: Arc::new(InstalledIndex::default()),
             stats: InstalledStats::default(),
             updates: UpdatesInfo::default(),
             cache_sizes: CacheSizes::default(),
@@ -916,7 +958,7 @@ impl App {
     pub fn clear_search(&mut self) {
         self.query.clear();
         self.query_id += 1;
-        self.hits_buffer.clear();
+        self.hits_by_source.clear();
         self.rows.clear();
         self.results_selected = 0;
         for (_, state) in &mut self.source_status {
@@ -928,7 +970,7 @@ impl App {
     pub fn start_query(&mut self, query: String) -> u64 {
         self.query = query;
         self.query_id += 1;
-        self.hits_buffer.clear();
+        self.hits_by_source.clear();
         self.rows.clear();
         self.results_selected = 0;
         // A search always lands in the Search view's results.
@@ -941,29 +983,52 @@ impl App {
         self.query_id
     }
 
+    /// Record one source's hits for the current query and return the merge to run
+    /// for them. Only the bookkeeping happens here (it runs on the event loop);
+    /// the merge itself is CPU-bound in the size of the whole result set, so the
+    /// caller runs the returned job off-thread and feeds it back through
+    /// `apply_merged_rows`. `None` when the results are stale.
+    #[must_use]
     pub fn apply_search_results(
         &mut self,
         query_id: u64,
         source_id: SourceId,
         hits: Vec<PackageHit>,
-    ) {
+    ) -> Option<MergeJob> {
         if query_id != self.query_id {
-            return; // stale
+            return None; // stale
         }
         let count = hits.len();
-        self.hits_buffer.extend(hits);
-        self.rows = merge(
-            self.hits_buffer.clone(),
-            &self.installed,
-            self.effective_stack_variants(),
-            self.settings.group_flatpak,
-        );
-        relevance_sort(&self.query, &mut self.rows);
+        let hits = Arc::new(hits);
+        match self.hits_by_source.iter_mut().find(|(id, _)| *id == source_id) {
+            Some(entry) => entry.1 = hits,
+            None => self.hits_by_source.push((source_id, hits)),
+        }
+        self.set_source_state(source_id, SourceState::Done(count));
+        self.merge_id += 1;
+        Some(MergeJob {
+            query_id,
+            merge_id: self.merge_id,
+            hits: self.hits_by_source.iter().map(|(_, h)| Arc::clone(h)).collect(),
+            installed: Arc::clone(&self.installed),
+            stack_variants: self.effective_stack_variants(),
+            group_flatpak: self.settings.group_flatpak,
+            query: self.query.clone(),
+        })
+    }
+
+    /// Install merged rows produced off-thread. Dropped when they belong to an
+    /// older query, or to a merge already superseded by a newer one.
+    pub fn apply_merged_rows(&mut self, query_id: u64, merge_id: u64, rows: Vec<PackageRow>) {
+        if query_id != self.query_id || merge_id <= self.applied_merge_id {
+            return;
+        }
+        self.applied_merge_id = merge_id;
+        self.rows = rows;
         let visible = self.search_rows().len();
         if self.results_selected >= visible {
             self.results_selected = visible.saturating_sub(1);
         }
-        self.set_source_state(source_id, SourceState::Done(count));
     }
 
     pub fn set_source_error(&mut self, query_id: u64, source_id: SourceId) {
@@ -1688,6 +1753,21 @@ impl App {
     pub fn move_selection(&mut self, delta: i32) {
         self.results_selected = clamp_index(self.results_selected, delta, self.search_rows().len());
     }
+
+    /// The event loop's two-step search path (record hits, merge off-thread,
+    /// apply rows) collapsed into one synchronous call, for tests.
+    #[cfg(test)]
+    fn apply_search_results_now(
+        &mut self,
+        query_id: u64,
+        source_id: SourceId,
+        hits: Vec<PackageHit>,
+    ) {
+        if let Some(job) = self.apply_search_results(query_id, source_id, hits) {
+            let rows = job.run();
+            self.apply_merged_rows(job.query_id, job.merge_id, rows);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1895,7 +1975,7 @@ mod tests {
     fn clear_search_drops_rows_and_discards_inflight() {
         let mut app = App::with_settings(vec![SourceId::Pacman, SourceId::Aur], Settings::default());
         let id = app.start_query("firefox".into());
-        app.apply_search_results(id, SourceId::Pacman, vec![hit("firefox", SourceId::Pacman)]);
+        app.apply_search_results_now(id, SourceId::Pacman, vec![hit("firefox", SourceId::Pacman)]);
         assert_eq!(app.rows.len(), 1);
 
         app.clear_search();
@@ -1905,7 +1985,7 @@ mod tests {
         // Counters back to zero, not the previous hit count.
         assert!(matches!(app.source_status[0].1, SourceState::Done(0)));
         // The bumped id means a late result from the old query is now stale.
-        app.apply_search_results(id, SourceId::Aur, vec![hit("firefox-bin", SourceId::Aur)]);
+        app.apply_search_results_now(id, SourceId::Aur, vec![hit("firefox-bin", SourceId::Aur)]);
         assert!(app.rows.is_empty());
     }
 
@@ -1916,13 +1996,13 @@ mod tests {
         let mut app = App::with_settings(vec![SourceId::Pacman, SourceId::Aur], settings);
         let id = app.start_query("firefox".into());
 
-        app.apply_search_results(id, SourceId::Pacman, vec![hit("firefox", SourceId::Pacman)]);
+        app.apply_search_results_now(id, SourceId::Pacman, vec![hit("firefox", SourceId::Pacman)]);
         assert_eq!(app.rows.len(), 1);
 
-        app.apply_search_results(id - 1, SourceId::Aur, vec![hit("firefox-bin", SourceId::Aur)]);
+        app.apply_search_results_now(id - 1, SourceId::Aur, vec![hit("firefox-bin", SourceId::Aur)]);
         assert_eq!(app.rows.len(), 1);
 
-        app.apply_search_results(id, SourceId::Aur, vec![hit("firefox-bin", SourceId::Aur)]);
+        app.apply_search_results_now(id, SourceId::Aur, vec![hit("firefox-bin", SourceId::Aur)]);
         assert_eq!(app.rows.len(), 2);
         assert_eq!(app.rows[0].name, "firefox");
     }
@@ -2828,7 +2908,7 @@ mod tests {
     fn selection_clamps_within_bounds() {
         let mut app = App::with_settings(vec![SourceId::Pacman], Settings::default());
         let id = app.start_query("f".into());
-        app.apply_search_results(
+        app.apply_search_results_now(
             id,
             SourceId::Pacman,
             vec![hit("a", SourceId::Pacman), hit("b", SourceId::Pacman)],

@@ -227,7 +227,12 @@ fn handle_event(
             }
         }
         AppEvent::SearchHits { query_id, source_id, hits } => {
-            app.apply_search_results(query_id, source_id, hits);
+            if let Some(job) = app.apply_search_results(query_id, source_id, hits) {
+                spawn_merge(job, tx.clone());
+            }
+        }
+        AppEvent::RowsMerged { query_id, merge_id, rows } => {
+            app.apply_merged_rows(query_id, merge_id, rows);
         }
         AppEvent::SearchError { query_id, source_id } => {
             app.set_source_error(query_id, source_id);
@@ -235,7 +240,7 @@ fn handle_event(
         AppEvent::SelfUpdate(tag) => app.newer_version = Some(tag),
         AppEvent::Stats(s) => app.stats = s,
         AppEvent::Updates(u) => app.updates = u,
-        AppEvent::Installed(idx) => app.installed = idx,
+        AppEvent::Installed(idx) => app.installed = Arc::new(idx),
         AppEvent::InstalledList(list, repos) => {
             app.installed_list = list;
             app.filter_repos = repos;
@@ -902,6 +907,20 @@ async fn aur_update_text(helper: Option<String>) -> Option<String> {
         Ok(out) => Some(String::from_utf8_lossy(&out.stdout).into_owned()),
         Err(_) => None,
     }
+}
+
+/// Run a merge off the event loop and send the rows back. `spawn_blocking`, not
+/// `spawn`: the work is CPU-bound and long enough at catalog scale to starve the
+/// async workers (and with them the input task) if it ran on one of them.
+fn spawn_merge(job: crate::app::MergeJob, tx: UnboundedSender<AppEvent>) {
+    tokio::task::spawn_blocking(move || {
+        let rows = job.run();
+        let _ = tx.send(AppEvent::RowsMerged {
+            query_id: job.query_id,
+            merge_id: job.merge_id,
+            rows,
+        });
+    });
 }
 
 fn dispatch_search(
@@ -1686,7 +1705,7 @@ async fn run_search_cli(term: &str) -> anyhow::Result<()> {
     }
     let idx = installed_index().await;
     let mut rows = merge(
-        all_hits,
+        &all_hits,
         &idx,
         settings.stack_variants && sources::which("pacman"),
         settings.group_flatpak,

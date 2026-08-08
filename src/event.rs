@@ -1,4 +1,6 @@
-use crate::model::{CacheSizes, InstalledStats, PackageDetail, PackageHit, SourceId, UpdatesInfo};
+use crate::model::{
+    CacheSizes, InstalledStats, PackageDetail, PackageHit, PackageRow, SourceId, UpdatesInfo,
+};
 use crate::sources::installed::{InstalledIndex, InstalledPkg, PkgDetail};
 use crate::sources::updates::UpdateEntry;
 
@@ -14,6 +16,12 @@ pub enum AppEvent {
     SearchError {
         query_id: u64,
         source_id: SourceId,
+    },
+    /// Rows produced by a merge that ran off the event loop (see `MergeJob`).
+    RowsMerged {
+        query_id: u64,
+        merge_id: u64,
+        rows: Vec<PackageRow>,
     },
     Stats(InstalledStats),
     Updates(UpdatesInfo),

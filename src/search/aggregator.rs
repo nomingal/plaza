@@ -12,8 +12,11 @@ use std::collections::HashMap;
 /// existing repo/AUR bucket by their normalized human name when `group_flatpak`
 /// is on, else stand alone in their own app-ID bucket). The row label is the
 /// shortest raw name in the bucket.
-pub fn merge(
-    hits: Vec<PackageHit>,
+///
+/// Takes the hits by reference so a caller holding several per-source buffers can
+/// merge them without concatenating (and copying) them first.
+pub fn merge<'a>(
+    hits: impl IntoIterator<Item = &'a PackageHit>,
     installed: &InstalledIndex,
     stack_variants: bool,
     group_flatpak: bool,
@@ -22,7 +25,7 @@ pub fn merge(
 
     // Round 0: base hits. Round 1: stripped variants. Round 2: Flatpak.
     let mut rounds: Vec<Vec<&PackageHit>> = vec![Vec::new(), Vec::new(), Vec::new()];
-    for h in &hits {
+    for h in hits {
         rounds[round_of(h, stack_variants)].push(h);
     }
 
@@ -171,14 +174,15 @@ pub fn row_rank(q: &str, row: &PackageRow) -> u8 {
 
 /// Sort rows by relevance to `query`: exact > prefix > substring, then shorter
 /// name, then alphabetical. Total + deterministic.
+///
+/// `row_rank` lowercases the row name and every provider target, so calling it
+/// from inside the comparator costs those allocations once per *comparison*
+/// (O(n log n) of them). `sort_by_cached_key` computes each row's key once
+/// instead, which is what keeps a large result set (a short query against the
+/// full dnf catalog matches tens of thousands of rows) from stalling.
 pub fn relevance_sort(query: &str, rows: &mut [PackageRow]) {
     let q = query.to_lowercase();
-    rows.sort_by(|a, b| {
-        row_rank(&q, a)
-            .cmp(&row_rank(&q, b))
-            .then_with(|| a.name.len().cmp(&b.name.len()))
-            .then_with(|| a.name.cmp(&b.name))
-    });
+    rows.sort_by_cached_key(|r| (row_rank(&q, r), r.name.len(), r.name.clone()));
 }
 
 /// Byte range of the first case-insensitive (ASCII) occurrence of `query` in
@@ -240,8 +244,8 @@ mod tests {
             hit("cork-rs", SourceId::Aur, "1", ""),
             hit("cork-rs-bin", SourceId::Aur, "1", ""),
         ];
-        let grouped = merge(hits.clone(), &idx, true, true);
-        let ungrouped = merge(hits, &idx, false, true);
+        let grouped = merge(&hits, &idx, true, true);
+        let ungrouped = merge(&hits, &idx, false, true);
         assert!(grouped.len() < ungrouped.len());
         assert_eq!(ungrouped.len(), 2);
     }
@@ -254,7 +258,7 @@ mod tests {
             fhit("gimp-git", SourceId::Aur, None),
             fhit("GIMP", SourceId::Flatpak, Some("org.gimp.GIMP")),
         ];
-        let rows = merge(hits, &inst, true, true);
+        let rows = merge(&hits, &inst, true, true);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "gimp"); // shortest base label
         assert_eq!(rows[0].providers.len(), 3);
@@ -274,7 +278,7 @@ mod tests {
             fhit("gimp-bin", SourceId::Aur, None),
             fhit("gimp-git", SourceId::Aur, None),
         ];
-        let rows = merge(hits, &inst, true, true);
+        let rows = merge(&hits, &inst, true, true);
         assert_eq!(rows.len(), 1);
         // All three variants survive as distinct providers despite sharing
         // (Aur, repo=None); they differ by target.
@@ -293,7 +297,7 @@ mod tests {
             fhit("gimp", SourceId::Pacman, None),
             fhit("GNU Image Manipulation Program", SourceId::Flatpak, Some("org.gimp.GIMP")),
         ];
-        let rows = merge(hits, &inst, true, true);
+        let rows = merge(&hits, &inst, true, true);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "gimp");
         assert!(rows[0].providers.iter().any(|p| p.source_id == SourceId::Flatpak));
@@ -308,7 +312,7 @@ mod tests {
             fhit("code", SourceId::Pacman, None),
             fhit("Some Cool Tool", SourceId::Flatpak, Some("com.example.Frobnicator")),
         ];
-        let rows = merge(hits, &inst, true, true);
+        let rows = merge(&hits, &inst, true, true);
         assert_eq!(rows.len(), 2);
     }
 
@@ -316,7 +320,7 @@ mod tests {
     fn orphan_variant_stays_standalone_without_base() {
         let inst = InstalledIndex::default();
         let hits = vec![fhit("python-git", SourceId::Aur, None)];
-        let rows = merge(hits, &inst, true, true);
+        let rows = merge(&hits, &inst, true, true);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "python-git"); // did not invent a "python" row
     }
@@ -329,7 +333,7 @@ mod tests {
             fhit("gimp-bin", SourceId::Aur, None),
             fhit("GIMP", SourceId::Flatpak, Some("org.gimp.GIMP")),
         ];
-        let rows = merge(hits, &inst, false, false);
+        let rows = merge(&hits, &inst, false, false);
         assert_eq!(rows.len(), 3); // nothing merges with grouping off
     }
 
@@ -341,7 +345,7 @@ mod tests {
             hit("firefox-bin", SourceId::Aur, "141.0-1", "binary build"),
         ];
         let idx = InstalledIndex::from_query_output("firefox 141.0\n");
-        let mut rows = merge(hits, &idx, false, false);
+        let mut rows = merge(&hits, &idx, false, false);
         relevance_sort("firefox", &mut rows);
 
         assert_eq!(rows.len(), 2);
@@ -379,7 +383,7 @@ mod tests {
             hit_repo("neovim", "0.12.3-1", "extra"),
         ];
         let idx = InstalledIndex::default();
-        let rows = merge(hits, &idx, false, false);
+        let rows = merge(&hits, &idx, false, false);
         assert_eq!(rows.len(), 1);
         let badges: Vec<&str> = rows[0].providers.iter().map(|p| p.badge()).collect();
         assert_eq!(badges, vec!["world", "extra-x86-64-v3", "extra"]);
@@ -405,7 +409,7 @@ mod tests {
             fhit("zzz-unrelated", SourceId::Aur, None),
             fhit("GNU Image Manipulation Program", SourceId::Flatpak, Some("org.gimp.GIMP")),
         ];
-        let mut rows = merge(hits, &inst, true, true);
+        let mut rows = merge(&hits, &inst, true, true);
         relevance_sort("gimp", &mut rows);
         assert_eq!(rows[0].name, "GNU Image Manipulation Program");
     }
@@ -418,7 +422,7 @@ mod tests {
             hit("firefox-bin", SourceId::Aur, "1", ""),
             hit("firefox", SourceId::Pacman, "1", ""),
         ];
-        let mut rows = merge(hits, &idx, false, false);
+        let mut rows = merge(&hits, &idx, false, false);
         relevance_sort("firefox", &mut rows);
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["firefox", "firefox-bin", "xfirefox"]);
