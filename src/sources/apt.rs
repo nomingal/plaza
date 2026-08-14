@@ -25,14 +25,19 @@ impl Source for AptSource {
     async fn search(&self, query: &str) -> anyhow::Result<Vec<PackageHit>> {
         // `apt-cache search` matches name + description but gives no version or
         // suite; a batched `apt-cache policy` over the matched names fills those.
-        let search_out = Command::new("apt-cache").arg("search").arg(query).output().await?;
+        // LC_ALL=C because `apt-cache policy` translates its field labels
+        // ("Candidate:", "Installed:"); a localized system would otherwise make
+        // `parse_policy` find no candidate and drop every hit.
+        let search_out =
+            Command::new("apt-cache").env("LC_ALL", "C").arg("search").arg(query).output().await?;
         let search = String::from_utf8_lossy(&search_out.stdout).into_owned();
         let names: Vec<String> =
             parse_search_output(&search).into_iter().map(|(n, _)| n).collect();
         if names.is_empty() {
             return Ok(Vec::new());
         }
-        let policy_out = Command::new("apt-cache").arg("policy").args(&names).output().await?;
+        let policy_out =
+            Command::new("apt-cache").env("LC_ALL", "C").arg("policy").args(&names).output().await?;
         let policy = String::from_utf8_lossy(&policy_out.stdout);
         Ok(build_hits(&search, &policy))
     }
